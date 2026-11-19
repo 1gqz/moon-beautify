@@ -172,18 +172,19 @@ function View.badge(w, h, prefix)
     return mount(w, h, slots, widget)
 end
 
---- 给任意组件内容套一层背景图 / 花边（补丁用）。src 可以为空（只加花边）。
+--- 给任意组件内容套一层背景图 / 边框 / 花边（补丁用）。src 可以为空（只加边框或花边）。
 ---@param w number
 ---@param h number
 ---@param src string|nil 背景图绝对路径
 ---@param veil number 0-100 提亮比例，越大内容越清楚
 ---@param inner table 组件内容
 ---@param lace string|nil 花边（带透明通道的 PNG，画在内容之上）
+---@param fit string|nil 背景填充方式：stretch / fill / fit / tile
 ---@return table
-function View.background(w, h, src, veil, inner, lace)
+function View.background(w, h, src, veil, inner, lace, fit)
     local stack = Stack:new{ dimen = Geom:new{ w = w, h = h } }
     if type(src) == "string" and src ~= "" then
-        stack[1] = Image.widget{ src = src, width = w, height = h, stretch = true, style = {}, fallback = "" }
+        stack[1] = require("moonbeautify.bg").layer(src, w, h, fit)
     end
     stack[2] = inner
     stack.veil = veil

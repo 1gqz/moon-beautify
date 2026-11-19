@@ -185,16 +185,16 @@ end
 
 --- 底图：照片（可旋转）+ 倒角 + 侧影 + 叠加素材 + 光环
 --- 用 BB8A：没画到的角落 alpha=0，paintTo 用 alphablitFrom 时透出壁纸
----@param src string
+---@param sbb table 已经缩放到 w×h 的源图（静态图或动图的某一帧）
 ---@param w number
 ---@param h number
 ---@param angle number 弧度
 ---@param overlay string|nil
 ---@param shape string
 ---@param ring string|boolean|nil 光环开关
+---@param own boolean|nil 是否要在算完后释放 sbb（静态图每次新建，动图帧是复用的）
 ---@return table|nil, number 位图, 本体边长
-local function plateBase(src, w, h, angle, overlay, shape, ring)
-    local sbb = RenderImage:renderImageFile(src, false, w, h)
+local function plateBase(sbb, w, h, angle, overlay, shape, ring, own)
     if not sbb then return nil end
 
     -- 开了光环时本体往里缩，让出一圈空间
@@ -239,6 +239,7 @@ local function plateBase(src, w, h, angle, overlay, shape, ring)
 
     blendOverlay(bb, di, di, overlay, rc, margin, margin)
     if ring then paintRing(bb, w, h, di, margin, shape) end
+    if own then pcall(function() sbb:free() end) end
     return bb, di
 end
 
@@ -277,20 +278,68 @@ function Painted:free()
         self.base:free()
         self.base = nil
         self.base_angle = nil
+        self.base_frame = nil
         self.inner = nil
+    end
+    if self.frame_bbs then
+        for _k, v in pairs(self.frame_bbs) do pcall(function() v:free() end) end
+        self.frame_bbs = nil
+    end
+    if self.frames then
+        pcall(function() self.frames:free() end)
+        self.frames = nil
     end
 end
 
 
 
---- 重算底图（角度变了才真的算）
+--- 取当前该用的源图：动图取当前帧（解过的留着复用），静态图现解一张
+---@param widget table
+---@return table|nil bb, boolean own
+local function sourceOf(widget)
+    local w, h = widget.dimen.w, widget.dimen.h
+    if widget.frames then
+        local n = #widget.frames
+        if n < 1 then return nil end
+        local i = ((widget.frame or 1) - 1) % n + 1
+        local cache = widget.frame_bbs
+        if not cache then cache = {}; widget.frame_bbs = cache end
+        local bb = cache[i]
+        if not bb then
+            -- 帧缓存上限：动图帧多了只留最近用到的，别把内存吃光
+            local count = 0
+            for _k in pairs(cache) do count = count + 1 end
+            if count >= 24 then
+                for k, v in pairs(cache) do
+                    pcall(function() v:free() end)
+                    cache[k] = nil
+                end
+            end
+            local ok, got = pcall(widget.frames[i])
+            if ok and got then
+                bb = got
+                cache[i] = got
+            end
+        end
+        return bb, false
+    end
+    local ok, bb = pcall(function() return RenderImage:renderImageFile(widget.src, false, w, h) end)
+    if ok and bb then return bb, true end
+    return nil
+end
+
+--- 重算底图（角度或帧变了才真的算）
 local function ensureBase(widget)
     local angle = widget.angle or 0
-    if widget.base and widget.base_angle == angle then return true end
-    local base, inner = plateBase(widget.src, widget.dimen.w, widget.dimen.h, angle,
-        widget.overlay, widget.shape, widget.ring)
+    local frame = widget.frames and (widget.frame or 1) or 0
+    if widget.base and widget.base_angle == angle and (widget.base_frame or 0) == frame then return true end
+    local sbb, own = sourceOf(widget)
+    if not sbb then return false end
+    local base, inner = plateBase(sbb, widget.dimen.w, widget.dimen.h, angle,
+        widget.overlay, widget.shape, widget.ring, own)
     if not base then return false end
-    widget.base, widget.base_angle, widget.inner = base, angle, inner
+    if widget.base then pcall(function() widget.base:free() end) end
+    widget.base, widget.base_angle, widget.inner, widget.base_frame = base, angle, inner, frame
     return true
 end
 
@@ -327,6 +376,10 @@ local function tick()
             w.phase = ((w.phase or 0) + Badge.TICK / 6) % 1
             if w.period and w.period > 0 then
                 w.angle = ((w.angle or 0) + 2 * math.pi * Badge.TICK / w.period) % (2 * math.pi)
+            end
+            -- 动图：每个节拍换一帧（墨水屏上 0.8 秒一帧，够用也不拖影）
+            if w.frames and #w.frames > 1 then
+                w.frame = ((w.frame or 1) % #w.frames) + 1
             end
             if compose(w) then
                 -- KOReader 的 setDirty(widget, mode, region, dither)：region 必须是 Geom。
@@ -393,6 +446,17 @@ function Badge.widget(w, h, src, opts)
         ring = opts.ring
     end
 
+    -- 动图：GIF / 动态 WebP。KOReader 自带 GifLib 解码，want_frames = true 时
+    -- 返回一个「调用即得该帧位图」的函数表；静态图仍然返回一张位图。
+    -- 动图关掉（opts.anim == false）或不是动图时 frames 为 nil，走原来的静态路径。
+    local frames
+    local lower = src:lower()
+    local maybe_anim = opts.anim ~= false and (lower:match("%.gif$") ~= nil or lower:match("%.webp$") ~= nil)
+    if maybe_anim then
+        local ok, got = pcall(function() return RenderImage:renderImageFile(src, true, d, d) end)
+        if ok and type(got) == "table" and #got > 1 then frames = got end
+    end
+
     local widget = Painted:new{
         dimen = Geom:new{ w = d, h = d },
         src = src,
@@ -403,9 +467,20 @@ function Badge.widget(w, h, src, opts)
         period = period > 0 and period or nil,
         angle = 0,
         phase = 0,
-        animated = (effects ~= nil) or (period > 0),
+        frames = frames,
+        frame = frames and 1 or nil,
+        animated = (effects ~= nil) or (period > 0) or (frames ~= nil),
     }
-    if not compose(widget) then return nil end
+    if not compose(widget) then
+        -- 动图解码失败：退回静态渲染再试一次
+        if frames then
+            widget.frames, widget.frame, widget.base_frame = nil, nil, nil
+            pcall(function() frames:free() end)
+            widget.animated = (effects ~= nil) or (period > 0)
+            if compose(widget) then return widget end
+        end
+        return nil
+    end
     return widget
 end
 

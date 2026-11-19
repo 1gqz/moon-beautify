@@ -38,14 +38,25 @@ function Deco.render(path, w, h)
     -- 一律规范化成 BB8A：BBRGB32 虽然也带 alpha 字段，但 blitFrom 对它是直接拷贝
     local bw, bh = bb:getWidth(), bb:getHeight()
     local out = Blitbuffer.new(w, h, Blitbuffer.TYPE_BB8A)
+    -- 只有 Color8A / ColorRGB32 的像素带 alpha 字段；BB8（灰度）的像素是
+    -- Color8，只有 a 一个字段，直接读 px.alpha 会在真机上抛
+    -- 「struct Color8 has no member named 'alpha'」。这里先探一次再决定用哪种取法。
+    local probe = bb:getPixel(0, 0)
+    local ok_alpha, probe_alpha = pcall(function() return probe.alpha end)
+    local has_alpha = ok_alpha and probe_alpha ~= nil
     for y = 0, h - 1 do
         if y < bh then
             for x = 0, w - 1 do
                 if x < bw then
                     local px = bb:getPixel(x, y)
-                    local a = px.alpha
                     local gray = px:getColor8().a
-                    if not a then a = 255 - gray end
+                    local a
+                    if has_alpha then
+                        a = px.alpha
+                    else
+                        -- 源图没有 alpha 通道：按「暗=墨、亮=透明」反推
+                        a = 255 - gray
+                    end
                     if a > 0 then
                         out:setPixel(x, y, Blitbuffer.Color8A(gray, a))
                     end

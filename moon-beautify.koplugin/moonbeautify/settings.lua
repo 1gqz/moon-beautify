@@ -11,6 +11,8 @@ local UIManager = require("ui/uimanager")
 local List = require("ui.themes.widgets.list")
 local Row = require("ui.themes.widgets.row")
 local Spin = require("ui.themes.widgets.spin")
+local Input = require("ui.themes.widgets.input")
+local Overlay = require("desktop.pages.setting.overlay")
 local Image = require("utils.image")
 local _ = require("gettext")
 -- gettext 的 %1 占位符只有 template 认识，string.format 会报 invalid option '%1'
@@ -25,7 +27,8 @@ local Settings = {}
 local function repaint(desktop)
     if not desktop then return end
     pcall(function() desktop:updateView() end)
-    pcall(function() UIManager:setDirty(desktop, "full") end)
+    -- desktop:updateView 里已顺带重刷设置页；这里标全屏让整条 window stack 一起重画
+    pcall(function() UIManager:setDirty("all", "ui") end)
 end
 
 --- 记下配置、落盘、重画
@@ -476,9 +479,17 @@ local function widgetBgDialog(desktop, comp)
     local all = type(conf.widget_bg) == "table" and conf.widget_bg or {}
     local item = all[comp.id]
     local veil = type(item) == "table" and tonumber(item.veil) or 0
+    local padMap = type(conf.widget_pad) == "table" and conf.widget_pad or {}
+    local pad = tonumber(padMap[comp.id]) or 0
+    local Bg = require("moonbeautify.bg")
+    local fit = (type(item) == "table" and Bg.MODES[item.fit]) and item.fit or "stretch"
+    local fitLabels = {}
+    for mode, label in pairs(Bg.MODES) do fitLabels[mode] = label end
     choose(comp.label, {
         { value = "pick", text = _("选一张背景图…") },
+        { value = "fit", text = T(_("填充方式：%1"), _(fitLabels[fit])) },
         { value = "veil", text = T(_("内容提亮：%1%"), veil) },
+        { value = "pad", text = T(_("内容内边距：%1"), pad > 0 and (pad .. " px") or _("关")) },
         { value = "reset", text = _("移除背景"), enabled = item ~= nil },
     }, nil, function(value)
         local function save(mutate)
@@ -496,6 +507,17 @@ local function widgetBgDialog(desktop, comp)
                     bg[comp.id].src = path
                 end)
             end)
+        elseif value == "fit" then
+            local items, order = {}, { "stretch", "fill", "fit", "tile" }
+            for _i, mode in ipairs(order) do
+                items[#items + 1] = { value = mode, text = _(fitLabels[mode]), mandatory = mode == fit and _("当前") or nil }
+            end
+            choose(_("填充方式"), items, nil, function(mode)
+                save(function(bg)
+                    bg[comp.id] = bg[comp.id] or {}
+                    bg[comp.id].fit = mode
+                end)
+            end)
         elseif value == "veil" then
             Spin:new{
                 title = _("内容提亮"),
@@ -508,6 +530,23 @@ local function widgetBgDialog(desktop, comp)
                         bg[comp.id] = bg[comp.id] or {}
                         bg[comp.id].veil = math.floor(v)
                     end)
+                end,
+            }:show()
+        elseif value == "pad" then
+            Spin:new{
+                title = _("内容内边距"),
+                fields = { {
+                    value = pad, min = 0, max = 24, step = 2,
+                    format = function(v) return (v <= 0) and _("关") or (v .. " px") end,
+                } },
+                callback = function(v)
+                    local c = Store.conf()
+                    c.widget_pad = type(c.widget_pad) == "table" and c.widget_pad or {}
+                    local n = math.floor(v)
+                    c.widget_pad[comp.id] = n > 0 and n or nil
+                    if next(c.widget_pad) == nil then c.widget_pad = nil end
+                    Store.save()
+                    repaint(desktop)
                 end,
             }:show()
         elseif value == "reset" then
@@ -536,22 +575,357 @@ local function widgetBgPage(desktop)
     end)
 end
 
---- 依次点两个组件，存成一组并排
+local refreshThemePage -- 前置声明，定义在 themePageTable 之后
+
+--- 轻提示（KOReader 原生 InfoMessage：左侧信息图标，点一下即关，默认 2 秒自动消失）
+---@param text string
+---@param seconds number|nil
+local function themeToast(text, seconds)
+    if not text or text == "" then return end
+    pcall(function()
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{
+            text = text,
+            timeout = seconds or 2,
+        })
+    end)
+end
+
+local tabOrderPage -- 前置声明：moveTab 移动完要重开本页
+
+--- 当前顺序数组：用户配置里还存在的格子按配置排，没配的按默认顺序补在后面
+---@param desktop table|nil
+---@return string[] id 数组
+local function currentTabOrder(desktop)
+    local conf = Store.conf()
+    local order = type(conf.tab_order) == "table" and conf.tab_order or {}
+    local seen, out = {}, {}
+    for _idx, id in ipairs(order) do
+        if type(id) == "string" and not seen[id] then
+            seen[id] = true
+            out[#out + 1] = id
+        end
+    end
+    for _idx, tab in ipairs(tabList(desktop)) do
+        if not seen[tab.id] then
+            seen[tab.id] = true
+            out[#out + 1] = tab.id
+        end
+    end
+    return out
+end
+
+--- id -> 显示名
+---@param desktop table|nil
+---@param id string
+---@return string
+local function tabName(desktop, id)
+    for _idx, tab in ipairs(tabList(desktop)) do
+        if tab.id == id then return tab.text end
+    end
+    return id
+end
+
+--- 单个格子的移动：上移 / 下移
+---@param desktop table|nil
+---@param order string[] 当前顺序（会被修改并保存）
+---@param index integer 要移动的格子
+---@param delta integer -1 上移 / 1 下移
+local function moveTab(desktop, order, index, delta)
+    local to = index + delta
+    if to < 1 or to > #order then
+        themeToast(delta < 0 and _("已经在最前面了") or _("已经在最后面了"))
+        return
+    end
+    order[index], order[to] = order[to], order[index]
+    Store.conf().tab_order = order
+    Store.save()
+    repaint(desktop)
+    tabOrderPage(desktop)   -- 重开本页让列表反映新顺序
+end
+
+--- 底栏图标顺序编辑页
+---@param desktop table|nil
+function tabOrderPage(desktop)
+    if not desktop then
+        themeToast(_("回到桌面后再设置"))
+        return
+    end
+    local order = currentTabOrder(desktop)
+    local conf = Store.conf()
+    local custom = type(conf.tab_order) == "table" and #conf.tab_order > 0 or false
+    local items = {}
+    for i, id in ipairs(order) do
+        items[#items + 1] = {
+            value = tostring(i),
+            text = tabName(desktop, id),
+            mandatory = tostring(i),
+        }
+    end
+    items[#items + 1] = {
+        value = "reset",
+        text = _("恢复默认顺序"),
+        mandatory = custom and _("按月读原来的排列") or nil,
+        enabled = custom,
+        separator = true,
+    }
+    List:new{
+        title = _("图标顺序"),
+        subtitle = _("点一个图标，选上移或下移"),
+        items = items,
+        current = nil,
+        centered = true,
+        on_select = function(value)
+            if value == "reset" then
+                Store.conf().tab_order = nil
+                Store.save()
+                repaint(desktop)
+                themeToast(_("已恢复默认顺序"))
+                return
+            end
+            local index = tonumber(value)
+            if not index then return end
+            local id = order[index]
+            choose(tabName(desktop, id), {
+                { value = "up", text = _("上移一位"), enabled = index > 1 },
+                { value = "down", text = _("下移一位"), enabled = index < #order },
+            }, nil, function(v)
+                if v == "up" then
+                    moveTab(desktop, order, index, -1)
+                elseif v == "down" then
+                    moveTab(desktop, order, index, 1)
+                end
+            end)
+        end,
+    }:show()
+end
+
+--- 保存当前配置为主题
+---@param desktop table|nil
+local function themeSave(desktop)
+    local dialog = Input:new{
+        title = _("主题名字"),
+        fields = { { text = "", hint = _("例如 主题1") } },
+        ok_text = _("保存"),
+        callback = function(value)
+            local Theme = require("moonbeautify.theme")
+            local safe = Theme.sanitize(value)
+            if not safe then
+                themeToast(_("名字不能为空"))
+                return
+            end
+            if lfs.attributes(Theme.root() .. "/" .. safe, "mode") == "directory" then
+                themeToast(_("该名称已被占用"))
+                return
+            end
+            local ok, dir_or_err = Theme.save(safe)
+            if ok then
+                put(desktop, "active_theme", safe)
+                refreshThemePage(desktop)
+                themeToast(T(_("已保存为主题：%1"), safe))
+            else
+                themeToast(T(_("保存失败：%1"), dir_or_err or ""))
+            end
+        end,
+    }
+    -- 选择器关闭动画期间直接开输入框会被顶掉，等下一帧再弹
+    local deferred = false
+    if UIManager.nextTick then
+        deferred = pcall(function()
+            UIManager:nextTick(function() dialog:show() end)
+        end)
+    end
+    if not deferred then dialog:show() end
+end
+
+--- 从 zip 导入主题
+---@param desktop table|nil
+local function themeImport(desktop)
+    local start = Store.conf().last_dir
+    if not (type(start) == "string" and start ~= ""
+        and lfs.attributes(start, "mode") == "directory") then
+        start = require("apps/filemanager/filemanagerutil").getHomeFolder()
+    end
+    require("ui.themes.widgets.path_picker"):new{
+        path = start,
+        select_file = true,
+        filter = function(name) return name:lower():match("%.zip$") ~= nil end,
+        on_select = function(path)
+            local Theme = require("moonbeautify.theme")
+            local ok, name_or_err = Theme.importZip(path)
+            if ok then
+                refreshThemePage(desktop)
+                themeToast(T(_("已导入主题：%1"), name_or_err))
+            else
+                themeToast(T(_("导入失败：%1"), name_or_err or ""))
+            end
+        end,
+    }:show()
+end
+
+--- 单个主题：应用 / 导出 / 删除
+---@param desktop table|nil
+---@param name string
+---@param active string|nil 当前应用中的主题名
+local function themeItem(desktop, name, active)
+    local applied = name == active
+    choose(name, {
+        { value = "apply", text = _("应用"),
+          mandatory = applied and _("当前正在使用中") or _("点击应用") },
+        { value = "export", text = _("导出主题 zip"),
+          mandatory = _("导到指定文件夹") },
+        { value = "delete", text = _("删除"),
+          mandatory = applied and _("使用中的主题无法删除") or _("删掉存档和图片") },
+    }, nil, function(v)
+        local Theme = require("moonbeautify.theme")
+        if v == "apply" then
+            local ok, err = Theme.apply(name)
+            if ok then
+                refreshThemePage(desktop)
+                repaint(desktop)
+                themeToast(_("已使用该主题"))
+            else
+                themeToast(T(_("应用失败：%1"), err or ""))
+            end
+        elseif v == "export" then
+            pickPath(desktop, nil, false, function(dir)
+                local ok, path_or_err = Theme.export(name, dir)
+                if ok then
+                    themeToast(T(_("已导出：%1"), path_or_err), 5)
+                else
+                    themeToast(T(_("导出失败：%1"), path_or_err or ""))
+                end
+            end)
+        elseif v == "delete" then
+            local ok, err = Theme.delete(name)
+            if ok then
+                refreshThemePage(desktop)
+                themeToast(_("已删除主题"))
+            elseif err == "beautify_in_use" then
+                themeToast(_("应用中删除失败，请先应用其他主题"))
+            else
+                themeToast(T(_("应用中删除失败，%1"), err or _("主题目录删不掉")))
+            end
+        end
+    end)
+end
+
+--- 主题管理页：保存 / 导入 / 已导入主题列表
+---@param desktop table|nil
+---@return table page
+local function themePageTable(desktop)
+    return {
+        title = _("主题"),
+        sections = function()
+            local Theme = require("moonbeautify.theme")
+            local active = Store.conf().active_theme
+            local themeRows = {}
+            for _idx, name in ipairs(Theme.list()) do
+                themeRows[#themeRows + 1] = function(iw)
+                    local n, kb = Theme.stat(name)
+                    local applied = name == active
+                    local status
+                    if applied then
+                        status = Theme.dirty(name) and _("应用中（有修改）") or _("应用中")
+                    end
+                    return Row.widget({
+                        width = iw,
+                        icon = "palette",
+                        title = name,
+                        subtitle = T(_("%1 张图 · %2 KB"), n, kb),
+                        status = status,
+                        status_on = applied,
+                        chevron = true,
+                        callback = function() themeItem(desktop, name, active) end,
+                    })
+                end
+            end
+            if #themeRows == 0 then
+                themeRows[#themeRows + 1] = function(iw)
+                    return Row.widget({
+                        width = iw, chevron = false, icon = "palette",
+                        title = _("还没有主题"),
+                        subtitle = _("先保存当前配置，或导入一个 zip"),
+                    })
+                end
+            end
+            return {
+                { title = _("保存与导入"), rows = {
+                    function(iw)
+                        return Row.widget({
+                            width = iw, icon = "save", chevron = true,
+                            title = _("当前配置保存为主题"),
+                            subtitle = _("保存当前整套设置配置"),
+                            callback = function() themeSave(desktop) end,
+                        })
+                    end,
+                    function(iw)
+                        return Row.widget({
+                            width = iw, icon = "download", chevron = true,
+                            title = _("导入主题 zip"),
+                            subtitle = _("不管 zip 在哪，导入即归档到固定目录"),
+                            callback = function() themeImport(desktop) end,
+                        })
+                    end,
+                } },
+                { title = _("已导入主题"), rows = themeRows },
+            }
+        end,
+    }
+end
+
+--- 让当前主题页重新取数据（sections 是函数，rebuild 会重新调用）
+---@param desktop table|nil
+function refreshThemePage(desktop)
+    if not desktop then return end
+    local ov = desktop.settings_overlay
+    if not ov then return end
+    pcall(function()
+        ov.page = nil      -- 列表变短后旧页码会越界，重置回第一页
+        ov:rebuild()
+        UIManager:setDirty(ov, "ui")
+    end)
+end
+
+--- 依次点两个组件，存成一组并排（一个组件只能进一组）
 ---@param desktop table|nil
 ---@param first string|nil 已选的第一个组件 id
 local function pickPair(desktop, first)
     local list = componentList()
     local labels = {}
     for _i, comp in ipairs(list) do labels[comp.id] = comp.label end
+    local index = require("moonbeautify.rows").groupIndex(Store.conf().rows)
     if not first then
         local items = {}
-        for _i, comp in ipairs(list) do items[#items + 1] = { value = comp.id, text = comp.label } end
-        return choose(_("第一个组件"), items, nil, function(id) pickPair(desktop, id) end)
+        for _i, comp in ipairs(list) do
+            local g = index[comp.id]
+            local mate
+            if g then
+                for _j, id in ipairs(g.ids) do
+                    if id ~= comp.id and labels[id] then mate = labels[id] break end
+                end
+            end
+            items[#items + 1] = {
+                value = comp.id,
+                text = comp.label,
+                mandatory = mate and T(_("已和「%1」并排"), mate) or nil,
+                enabled = not g,
+            }
+        end
+        return choose(_("第一个组件"), items, nil, function(id)
+            if id then pickPair(desktop, id) end
+        end)
     end
-    -- 第二个：排除已选的那个和跟它同组的
+    -- 第二个：只挑还没进任何组的
     local items = {}
     for _i, comp in ipairs(list) do
-        if comp.id ~= first then items[#items + 1] = { value = comp.id, text = comp.label } end
+        if comp.id ~= first and not index[comp.id] then
+            items[#items + 1] = { value = comp.id, text = comp.label }
+        end
+    end
+    if #items == 0 then
+        themeToast(_("其余组件都已有组合，没有可并排的了"))
+        return
     end
     choose(T(_("和「%1」并排"), labels[first] or first), items, nil, function(id)
         local c = Store.conf()
@@ -562,19 +936,12 @@ local function pickPair(desktop, first)
     end)
 end
 
---- 组件花边总入口：all 统一配所有组件，组件自己的键可覆盖
+--- 组件花边总入口：逐个组件设置
 ---@param desktop table|nil
 local function widgetLacePage(desktop)
     local conf = Store.conf()
     local map = type(conf.widget_lace) == "table" and conf.widget_lace or {}
     local items = {}
-    local all = map.all
-    items[#items + 1] = {
-        value = "all",
-        text = T(_("全部组件：%1"), (type(all) == "string" and all ~= "")
-            and (all:match("([^/]+)$") or all) or _("未设置")),
-        mandatory = type(all) == "string" and all ~= "" and _("统一花边") or nil,
-    }
     local labels = {}
     for _idx, comp in ipairs(componentList()) do
         labels[comp.id] = comp.label
@@ -582,18 +949,17 @@ local function widgetLacePage(desktop)
         items[#items + 1] = {
             value = comp.id,
             text = comp.label,
-            mandatory = (type(own) == "string" and own ~= "" and _("单独") or nil),
+            mandatory = (type(own) == "string" and own ~= "" and _("已设置") or nil),
         }
     end
     List:new{
         title = _("组件花边"),
-        subtitle = _("先配「全部组件」，再给个别组件换图或关掉"),
+        subtitle = _("给单个组件叠一圈花边（透明 PNG，中间镂空不挡内容）"),
         items = items,
         centered = true,
         on_select = function(value)
-            local target = value == "all" and "all" or value
-            local current = type(map[target]) == "string" and map[target] or nil
-            choose(value == "all" and _("全部组件") or (labels[value] or value), {
+            local current = type(map[value]) == "string" and map[value] or nil
+            choose(labels[value] or value, {
                 { value = "pick", text = _("选一张花边（透明 PNG）…") },
                 { value = "reset", text = _("移除花边"), enabled = current ~= nil },
             }, nil, function(v)
@@ -601,13 +967,13 @@ local function widgetLacePage(desktop)
                 if v == "pick" then
                     pickPath(desktop, current, true, function(path)
                         c.widget_lace = type(c.widget_lace) == "table" and c.widget_lace or {}
-                        c.widget_lace[target] = path
+                        c.widget_lace[value] = path
                         Store.save()
                         repaint(desktop)
                     end)
                 elseif v == "reset" then
                     c.widget_lace = type(c.widget_lace) == "table" and c.widget_lace or {}
-                    c.widget_lace[target] = nil
+                    c.widget_lace[value] = nil
                     if next(c.widget_lace) == nil then c.widget_lace = nil end
                     Store.save()
                     repaint(desktop)
@@ -621,7 +987,15 @@ end
 ---@param desktop table|nil
 local function rowsPage(desktop)
     local conf = Store.conf()
-    local groups = type(conf.rows) == "table" and conf.rows or {}
+    -- 自愈：旧版本可能存过成员重叠的组合（渲染层只认先出现的那组），打开本页时清掉
+    local cleaned, changed = require("moonbeautify.rows").cleanGroups(conf.rows)
+    if changed then
+        conf.rows = #cleaned > 0 and cleaned or nil
+        Store.save()
+        repaint(desktop)
+        themeToast(_("清理了与其他组合重叠的无效组合"))
+    end
+    local groups = cleaned
     local labels = {}
     for _i, comp in ipairs(componentList()) do labels[comp.id] = comp.label end
 
@@ -687,9 +1061,25 @@ function Settings.entries(desktop)
             end,
         },
         {
+            id = "tab_order",
+            group = "appearance",
+            order = 40.5,
+            row = function(iw)
+                local custom = type(conf.tab_order) == "table" and #conf.tab_order > 0 or false
+                return Row.widget({
+                    width = iw,
+                    icon = "swap_vert",
+                    title = _("图标顺序"),
+                    subtitle = custom and _("底栏图标已重新排列") or _("调整底栏图标的先后"),
+                    chevron = true,
+                    callback = function() tabOrderPage(desktop) end,
+                })
+            end,
+        },
+        {
             id = "widget_bg",
             group = "appearance",
-            order = 41,
+            order = 42,
             row = function(iw)
                 return Row.widget({
                     width = iw,
@@ -731,6 +1121,68 @@ function Settings.entries(desktop)
                 })
             end,
         },
+        {
+            id = "theme",
+            group = "appearance",
+            order = 44,
+            row = function(iw)
+                local themes = require("moonbeautify.theme").list()
+                local count = #themes
+                return Row.widget({
+                    width = iw,
+                    icon = "save",
+                    title = _("主题"),
+                    subtitle = count > 0 and T(_("%1 套已保存，可随时切换"), count)
+                        or _("整套美化连图片存档、分享、一键切换"),
+                    chevron = true,
+                    callback = function() Overlay.push(desktop, themePageTable(desktop)) end,
+                })
+            end,
+        },
+        -- 扩展自己的设置页（设置 → 系统 → 本机 → 美化），更新检查放这里，不混进外观
+        (function()
+            local Update = require("moonbeautify.update")
+            local ver = Update.version()
+            local title = ver and T(_("美化（%1）"), ver) or _("美化")
+            return {
+                id = "main",
+                group = "system",
+                order = 56,
+                icon = "settings_suggest",
+                title = title,
+                subtitle = _("外观增强"),
+                page = {
+                    title = title,
+                    sections = function()
+                        local on = Update.autoEnabled()
+                        return {
+                            { title = _("更新"), rows = {
+                                function(iw)
+                                    return Row.widget({
+                                        width = iw, chevron = false, kind = "toggle", icon = "update",
+                                        title = _("自动检查更新"),
+                                        subtitle = _("每天最多一次，发现新版本时弹窗提示"),
+                                        status = on and _("开") or _("关"), status_on = on,
+                                        callback = function()
+                                            Update.setAuto(not on)
+                                            if desktop then pcall(function() desktop:updateView() end) end
+                                        end,
+                                    })
+                                end,
+                                function(iw)
+                                    return Row.widget({
+                                        width = iw, chevron = false, kind = "action", icon = "settings_suggest",
+                                        title = _("检查更新"),
+                                        status = ver or "", status_on = true,
+                                        callback = function() Update.check(false) end,
+                                    })
+                                end,
+                            } },
+                        }
+                    end,
+                },
+            }
+        end)(),
     }
 end
 

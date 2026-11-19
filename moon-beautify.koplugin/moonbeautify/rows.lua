@@ -43,6 +43,30 @@ local function groupIndex(groups)
 end
 Rows.groupIndex = groupIndex
 
+--- 清掉互相重叠的组合：一个成员只能属于先出现的那组，冲突组整体解散
+---@param groups table[]
+---@return table[] cleaned, boolean changed
+local function cleanGroups(groups)
+    if type(groups) ~= "table" then return {}, false end
+    local used, out, changed = {}, {}, false
+    for _i, group in ipairs(groups) do
+        local ok = type(group) == "table" and #group >= 2
+        if ok then
+            for _j, id in ipairs(group) do
+                if used[id] then ok = false break end
+            end
+        end
+        if ok then
+            out[#out + 1] = group
+            for _j, id in ipairs(group) do used[id] = true end
+        else
+            changed = true
+        end
+    end
+    return out, changed
+end
+Rows.cleanGroups = cleanGroups
+
 --- 单组件的占位高度（内容 + 上下边距），与原生 packHeight 同口径
 ---@param raw table
 ---@return integer

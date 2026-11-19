@@ -23,6 +23,9 @@ end)
 -- 补丁：图标图片化 / 底栏换图 / 组件背景。必须在首页第一次 build 之前装上（本文件就是那个时机）。
 pcall(function() require("moonbeautify.patch").install() end)
 
+-- 更新检查：挂到「桌面回到前台」，每天最多查一次（和月读自己的更新检查同一个事件）
+pcall(function() require("moonbeautify.update").install() end)
+
 --- 高度按可用宽度的比例报，跟屏幕大小无关；用户在编辑态里还能自己拖。
 --- 这里按「最大档」给足高度，具体直径由设置里的尺寸决定（s/m/l 缩放边长），
 --- 这样改尺寸只动吧唧大小，不会把整页排版顶来顶去。

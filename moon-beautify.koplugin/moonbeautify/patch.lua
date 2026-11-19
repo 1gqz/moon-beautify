@@ -117,8 +117,53 @@ local function patchTabbar()
             return changed and copy or nil
         end)
         if ok and tabs then opts.tabs = tabs end
+        -- 图标顺序：tab_order 里配置了的格子按用户顺序排，没配置的（扩展格子等）保持原顺序跟在后面
+        local okr, ordered = pcall(function()
+            local order = Store.conf().tab_order
+            if type(order) ~= "table" or #order == 0 or type(opts.tabs) ~= "table" or #opts.tabs < 2 then
+                return nil
+            end
+            local rank = {}
+            for i, id in ipairs(order) do
+                if type(id) == "string" and rank[id] == nil then rank[id] = i end
+            end
+            local idx, copy = {}, {}
+            for i, tab in ipairs(opts.tabs) do
+                idx[tab] = i
+                copy[i] = tab
+            end
+            table.sort(copy, function(a, b)
+                local ra, rb = rank[a.id], rank[b.id]
+                if ra and rb then
+                    if ra ~= rb then return ra < rb end
+                    return idx[a] < idx[b]
+                end
+                if ra then return true end
+                if rb then return false end
+                return idx[a] < idx[b]
+            end)
+            for i, tab in ipairs(copy) do
+                if tab ~= opts.tabs[i] then return copy end
+            end
+            return nil
+        end)
+        if okr and ordered then opts.tabs = ordered end
         return orig(opts)
     end
+end
+
+--- 组件内容内边距：widget_pad.all 统一，组件自己的键覆盖（0 = 不收）
+---@param conf table
+---@param id string
+---@return integer
+local function padOf(conf, id)
+    local map = conf.widget_pad
+    if type(map) ~= "table" then return 0 end
+    local own = map[id]
+    local v = tonumber((own ~= nil) and own or map.all) or 0
+    if v < 0 then v = 0 end
+    if v > 24 then v = 24 end
+    return math.floor(v)
 end
 
 --- 补丁 3：组件背景 + 花边包裹
@@ -128,22 +173,28 @@ end
 local function decorate(self, widget)
     local ok, wrapped = pcall(function()
         local conf = Store.conf()
-        -- 花边：widget_lace.all 给全部组件统一配，组件自己的键可覆盖（false/空串表示关）
+        -- 花边：逐组件设置（false/空串表示关）
         local lace
         local laceConf = conf.widget_lace
-        if type(laceConf) == "table" then
-            local own = laceConf[self.id]
-            lace = (own ~= nil) and own or laceConf.all
-        end
+        if type(laceConf) == "table" then lace = laceConf[self.id] end
         if type(lace) ~= "string" or lace == "" then lace = nil end
         local item = type(conf.widget_bg) == "table" and conf.widget_bg[self.id] or nil
         local hasBg = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
-        if not hasBg and not lace then return nil end
+        local pad = padOf(conf, self.id)
+        if not hasBg and not lace and pad <= 0 then return nil end
+        -- 有内边距时组件是按缩小尺寸建的（_beautify_full 记着整槽尺寸），居中放回去
+        local dims = self._beautify_full
         local opts = self.opts or {}
-        local w, h = opts.width or widget.dimen and widget.dimen.w, opts.height or widget.dimen and widget.dimen.h
+        local w = (dims and dims.w) or opts.width or widget.dimen and widget.dimen.w
+        local h = (dims and dims.h) or opts.height or widget.dimen and widget.dimen.h
         if not (w and h) then return nil end
+        local inner = widget
+        if dims and pad > 0 then
+            inner = CenterContainer:new{ dimen = Geom:new{ w = w, h = h }, widget }
+        end
         return require("moonbeautify.view").background(w, h,
-            hasBg and item.src or nil, hasBg and (tonumber(item.veil) or 0) or 0, widget, lace)
+            hasBg and item.src or nil, hasBg and (tonumber(item.veil) or 0) or 0, inner, lace,
+            hasBg and item.fit or nil)
     end)
     if ok and wrapped then return wrapped end
     return widget
@@ -157,8 +208,29 @@ local function patchHome()
 
     local origBuild = Base.build
     Base.build = function(self, ctx, opts)
-        local slot = origBuild(self, ctx, opts)
-        if slot and slot[1] then slot[1] = decorate(self, slot[1]) end
+        -- 内边距：把组件按缩小后的宽高建出来，槽位本身保持原尺寸，
+        -- decorate 里再居中放回去——背景 / 边框 / 花边仍铺满整槽。
+        local build_opts = opts
+        local pad = padOf(Store.conf(), self.id)
+        local full
+        if pad > 0 and opts and tonumber(opts.width) and tonumber(opts.height) then
+            local w, h = math.floor(opts.width), math.floor(opts.height)
+            full = { w = w, h = h }
+            self._beautify_full = full
+            build_opts = {}
+            for k, v in pairs(opts) do build_opts[k] = v end
+            build_opts.width = math.max(24, w - pad * 2)
+            build_opts.height = math.max(24, h - pad * 2)
+        else
+            self._beautify_full = nil
+        end
+        local slot = origBuild(self, ctx, build_opts)
+        if slot then
+            if full and slot.dimen then
+                slot.dimen.w, slot.dimen.h = full.w, full.h
+            end
+            if slot[1] then slot[1] = decorate(self, slot[1]) end
+        end
         return slot
     end
 
