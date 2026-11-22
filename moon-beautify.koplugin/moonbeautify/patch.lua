@@ -166,20 +166,39 @@ local function padOf(conf, id)
     return math.floor(v)
 end
 
+--- 吧唧 / 相框有自己的设置入口，不参与通用组件背景、花边、内边距包裹。
+---@param id string|nil
+---@return boolean
+local function isBadgeOrFrame(id)
+    if type(id) ~= "string" then return false end
+    local bare = id:match("ext%.beautify%.(.+)$") or id
+    return bare:match("^badge%d*$") ~= nil or bare:match("^frame%d*$") ~= nil
+end
+
 --- 补丁 3：组件背景 + 花边包裹
 ---@param self table 组件实例（Base 子类）
 ---@param widget table 组件内容
 ---@return table
 local function decorate(self, widget)
+    if isBadgeOrFrame(self.id) then return widget end
     local ok, wrapped = pcall(function()
         local conf = Store.conf()
         -- 花边：逐组件设置（false/空串表示关）
-        local lace
+        -- 值是字符串（旧格式，纯路径）或表 { src = 路径, fit, ax, ay }
+        local lace, laceFit, laceAnchor, laceFocus
         local laceConf = conf.widget_lace
         if type(laceConf) == "table" then lace = laceConf[self.id] end
+        if type(lace) == "table" then
+            laceFit = lace.fit
+            laceAnchor = { x = tonumber(lace.ax) or 0.5, y = tonumber(lace.ay) or 0.5 }
+            laceFocus = require("moonbeautify.view").focusOf(lace.focus)
+            lace = lace.src
+        end
         if type(lace) ~= "string" or lace == "" then lace = nil end
         local item = type(conf.widget_bg) == "table" and conf.widget_bg[self.id] or nil
         local hasBg = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
+        local bgAnchor = hasBg and { x = tonumber(item.ax) or 0.5, y = tonumber(item.ay) or 0.5 } or nil
+        local bgFocus = hasBg and require("moonbeautify.view").focusOf(item.focus) or nil
         local pad = padOf(conf, self.id)
         if not hasBg and not lace and pad <= 0 then return nil end
         -- 有内边距时组件是按缩小尺寸建的（_beautify_full 记着整槽尺寸），居中放回去
@@ -194,7 +213,7 @@ local function decorate(self, widget)
         end
         return require("moonbeautify.view").background(w, h,
             hasBg and item.src or nil, hasBg and (tonumber(item.veil) or 0) or 0, inner, lace,
-            hasBg and item.fit or nil)
+            hasBg and item.fit or nil, laceFit, bgAnchor, laceAnchor, bgFocus, laceFocus)
     end)
     if ok and wrapped then return wrapped end
     return widget

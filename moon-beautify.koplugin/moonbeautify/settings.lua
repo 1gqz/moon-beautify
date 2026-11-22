@@ -41,6 +41,17 @@ local function put(desktop, key, value)
     repaint(desktop)
 end
 
+--- 取景设置项的显示文字：有选区显示选区描述，否则按「整图」看待。
+local function focusText(focus)
+    if type(focus) == "table" and tonumber(focus.w) and tonumber(focus.h) then
+        local wp = math.floor(focus.w * 100 + 0.5)
+        local hp = math.floor(focus.h * 100 + 0.5)
+        if wp >= 99 and hp >= 99 then return _("整图") end
+        return T(_("选区 宽%1 高%2"), wp, hp)
+    end
+    return _("整图")
+end
+
 --- 弹路径选择器。
 ---@param desktop table|nil
 ---@param current string|nil 当前路径（文件或目录）
@@ -75,21 +86,57 @@ local function pickPath(desktop, current, is_file, apply)
 end
 
 --- 单选 / 动作弹窗。
+--- items 也可以是函数：每次打开/每次选项回调后重新求值，用于让弹窗停在屏幕上并刷新最新值。
 ---@param title string
----@param items table[]
+---@param items table[]|fun():table[]
 ---@param current any
 ---@param on_select fun(value: any)
 local function choose(title, items, current, on_select)
-    List:new{
+    local makeItems = type(items) == "function" and items or nil
+    local dlg = List:new{
         title = title,
-        items = items,
+        items = makeItems and makeItems() or items,
         current = current,
         centered = true,
         on_select = function(value)
             if value == nil then return end
             on_select(value)
+            -- 带 keep_open 的项会留住本弹窗（选图/缩放等），用最新配置重建选项，避免显示旧值
+            if makeItems then
+                pcall(function() dlg.items = makeItems(); dlg:refresh() end)
+            end
         end,
+    }
+    dlg:show()
+    return dlg
+end
+
+--- 弹「取景选区」：全屏拖拽 Picker，回调选区 { x, y, w, h }。
+--- 没设图也能用——Picker 有「无预览图，仅设置选区比例」模式，照样能框选。
+---@param path string|nil 预览图绝对路径（可空）
+---@param focus table|nil 当前选区 { x, y, w, h }
+---@param apply fun(v: table)
+---@param desktop table|nil 传了就在开窗前关掉设置叠层链，避免 Picker 关闭后被 UIManager 重绘出来
+local function chooseFocus(path, focus, apply, desktop)
+    -- 全屏 Picker 关闭时 UIManager 会自动重绘它下面露出的窗口。
+    -- 若设置叠还压在下面，就会被画出来（表现为"确定后又弹出拓展/设置页"）。
+    -- 所以开窗前先关掉整条设置叠链，让 Picker 下面是桌面。
+    if desktop then
+        local okov, Overlay = pcall(require, "desktop.pages.setting.overlay")
+        if okov and Overlay and Overlay.closeAll then
+            pcall(Overlay.closeAll, desktop)
+        end
+    end
+    require("moonbeautify.focus_picker"):new{
+        path = type(path) == "string" and path ~= "" and path or nil,
+        current = focus,
+        on_select = function(x, y, w, h) apply({ x = x, y = y, w = w, h = h }) end,
     }:show()
+end
+
+--- 把选区结果写进「前缀式」配置。
+local function applyFocusPrefixed(conf, prefix, v)
+    conf[prefix .. "focus"] = { x = v.x, y = v.y, w = v.w, h = v.h }
 end
 
 local SIZES = {
@@ -315,10 +362,12 @@ end
 ---@param prefix string
 local function badgeSettings(desktop, prefix)
     local conf = Store.conf()
+    local focus = require("moonbeautify.view").focusOf(conf[prefix .. "focus"])
     local items = {
         { value = "src", text = T(_("图片：%1（固定图 / 文件夹）"),
             Store.enum(conf, prefix .. "pick", { file = true, folder = true }, "file") == "folder"
                 and _("文件夹") or _("固定一张")) },
+        { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true },
         { value = "shape", text = T(_("形状：%1"),
             ({ circle = _("圆形"), round = _("圆角"), square = _("直角") })[
                 Store.enum(conf, prefix .. "shape", { circle = true, round = true, square = true }, "circle")]) },
@@ -332,6 +381,13 @@ local function badgeSettings(desktop, prefix)
     choose(prefixTitle(prefix), items, nil, function(value)
         if value == "src" then
             srcPage(desktop, prefix, prefixTitle(prefix) .. _("图片"))
+        elseif value == "anchor" then
+            chooseFocus(select(1, require("moonbeautify.view").pickSrc(conf, prefix)), focus, function(v)
+                applyFocusPrefixed(conf, prefix, v)
+                Store.save()
+                -- 不 repaint(desktop)：全屏选区关闭后再重建桌面叠层会把底下的
+                -- 拓展/设置页重新画出来（表现为"确定后又弹一个页面"）。下次翻页自然刷新。
+            end, desktop)
         elseif value == "shape" then
             choose(_("形状"), {
                 { value = "circle", text = _("圆形") },
@@ -371,11 +427,72 @@ local function badgeSettings(desktop, prefix)
     end)
 end
 
+--- 相框的设置：呈现方式 / 图源 / 张数 / 取景选区。
+---@param desktop table|nil
+---@param prefix string 配置前缀，如 "frame_" / "frame2_"
+local function frameSettings(desktop, prefix)
+    local conf = Store.conf()
+    local view = Store.enum(conf, prefix .. "view", { single = true, stack = true }, "stack")
+    local count = math.max(1, math.min(9, tonumber(conf[prefix .. "count"]) or 5))
+    local focus = require("moonbeautify.view").focusOf(conf[prefix .. "focus"])
+
+    local viewText = view == "single" and _("单图铺满") or _("多图堆叠")
+    local title = prefix == "frame_" and _("相框") or T(_("相框 %1"), prefix:match("^frame(%d*)_") or "2")
+    local items = {
+        { value = "view", text = T(_("呈现方式：%1"), viewText) },
+        { value = "src", text = T(_("图片：%1（固定图 / 文件夹）"),
+            Store.enum(conf, prefix .. "pick", { file = true, folder = true }, "file") == "folder"
+                and _("文件夹") or _("固定一张")) },
+    }
+    -- 堆叠才有「张数」
+    if view == "stack" then
+        items[#items + 1] = { value = "count", text = T(_("张数：%1"), count) }
+    end
+    -- 取景选区只对单图有效；多图堆叠是整图完整显示，不裁切、不用选区。
+    items[#items + 1] = view == "single"
+        and { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true }
+        or  { value = "anchor", text = _("取景选区：（多图堆叠完整显示，不裁切）"), enabled = false }
+
+    choose(title, items, nil, function(value)
+        if value == "view" then
+            choose(_("呈现方式"), {
+                { value = "single", text = _("单图铺满（一张，填满裁边）") },
+                { value = "stack", text = _("多图堆叠（方块窗，左右滑动翻页）") },
+            }, view, function(v)
+                put(desktop, prefix .. "view", v)
+                require("moonbeautify.frame").reset(prefix)
+            end)
+        elseif value == "src" then
+            srcPage(desktop, prefix, title .. _("图片"))
+        elseif value == "count" then
+            Spin:new{
+                title = _("相框张数"),
+                fields = { { value = count, min = 1, max = 9 } },
+                callback = function(v) put(desktop, prefix .. "count", math.floor(v)) end,
+            }:show()
+        elseif value == "anchor" then
+            chooseFocus(select(1, require("moonbeautify.view").pickSrc(conf, prefix)), focus, function(v)
+                applyFocusPrefixed(conf, prefix, v)
+                Store.save()
+                -- 不 repaint(desktop)：避免全屏选区关闭后重建叠层导致拓展/设置页重现
+                require("moonbeautify.frame").reset(prefix)
+            end, desktop)
+        end
+    end)
+end
+
 --- 设置入口（widget.settings(desktop, id)）
 ---@param prefix string 配置前缀，如 "badge_" / "badge2_"
 ---@param desktop table|nil
 function Settings.show(prefix, desktop)
     return badgeSettings(desktop, prefix)
+end
+
+--- 相框设置入口
+---@param prefix string
+---@param desktop table|nil
+function Settings.showFrame(prefix, desktop)
+    return frameSettings(desktop, prefix)
 end
 
 -- 月读设置页入口 ------------------------------------------------------------
@@ -444,6 +561,14 @@ local function tabIconsPage(desktop)
             mandatory = map[tab.id] and _("自定义") or nil,
         }
     end
+    local custom = next(map) ~= nil
+    items[#items + 1] = {
+        value = "reset",
+        text = _("恢复默认图标"),
+        mandatory = custom and _("恢复全部") or nil,
+        enabled = custom,
+        separator = true,
+    }
     List:new{
         title = _("底栏图标"),
         subtitle = _("建议用方形单色小图标（PNG），会缩到图标大小"),
@@ -451,6 +576,13 @@ local function tabIconsPage(desktop)
         current = nil,
         centered = true,
         on_select = function(id)
+            if id == "reset" then
+                local c = Store.conf()
+                c.tab_icons = nil
+                Store.save()
+                repaint(desktop)
+                return
+            end
             for _i, tab in ipairs(tabList(desktop)) do
                 if tab.id == id then return tabIconDialog(desktop, tab) end
             end
@@ -471,35 +603,63 @@ local function componentList()
     return out
 end
 
+--- 组件背景/花边可设置的组件：排除本扩展的吧唧、相框（它们有自己的设置入口）。
+---@return table[] {{ id, label }}
+local function decoratableComponents()
+    local out = {}
+    for _i, comp in ipairs(componentList()) do
+        local id = comp.id
+        local bare = type(id) == "string" and (id:match("ext%.beautify%.(.+)$") or id) or ""
+        local is_badge = bare:match("^badge%d*$") ~= nil
+        local is_frame = bare:match("^frame%d*$") ~= nil
+        if not (is_badge or is_frame) then out[#out + 1] = comp end
+    end
+    return out
+end
+
 --- 单个组件的背景：选图 / 不透明度 / 移除
 ---@param desktop table|nil
 ---@param comp table { id, label }
 local function widgetBgDialog(desktop, comp)
-    local conf = Store.conf()
-    local all = type(conf.widget_bg) == "table" and conf.widget_bg or {}
-    local item = all[comp.id]
-    local veil = type(item) == "table" and tonumber(item.veil) or 0
-    local padMap = type(conf.widget_pad) == "table" and conf.widget_pad or {}
-    local pad = tonumber(padMap[comp.id]) or 0
-    local Bg = require("moonbeautify.bg")
-    local fit = (type(item) == "table" and Bg.MODES[item.fit]) and item.fit or "stretch"
-    local fitLabels = {}
-    for mode, label in pairs(Bg.MODES) do fitLabels[mode] = label end
-    choose(comp.label, {
-        { value = "pick", text = _("选一张背景图…") },
-        { value = "fit", text = T(_("填充方式：%1"), _(fitLabels[fit])) },
-        { value = "veil", text = T(_("内容提亮：%1%"), veil) },
-        { value = "pad", text = T(_("内容内边距：%1"), pad > 0 and (pad .. " px") or _("关")) },
-        { value = "reset", text = _("移除背景"), enabled = item ~= nil },
-    }, nil, function(value)
-        local function save(mutate)
-            local c = Store.conf()
-            c.widget_bg = type(c.widget_bg) == "table" and c.widget_bg or {}
-            mutate(c.widget_bg)
-            if next(c.widget_bg) == nil then c.widget_bg = nil end
-            Store.save()
-            repaint(desktop)
-        end
+    local function nameOf(path)
+        if type(path) ~= "string" or path == "" then return nil end
+        return path:match("([^/]+)$") or path
+    end
+    local function makeItems()
+        local c = Store.conf()
+        local all = type(c.widget_bg) == "table" and c.widget_bg or {}
+        local item = all[comp.id]
+        local src = type(item) == "table" and item.src or nil
+        local veil = type(item) == "table" and tonumber(item.veil) or 0
+        local padMap = type(c.widget_pad) == "table" and c.widget_pad or {}
+        local pad = tonumber(padMap[comp.id]) or 0
+        local focus = type(item) == "table" and require("moonbeautify.view").focusOf(item.focus) or nil
+        local name = nameOf(src)
+        return {
+            { value = "pick", text = name and T(_("更换背景图：%1"), name) or _("选一张背景图…"), keep_open = true },
+            { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
+            { value = "veil", text = T(_("内容提亮：%1%"), veil), keep_open = true },
+            { value = "pad", text = T(_("内容内边距：%1"), pad > 0 and (pad .. " px") or _("关")), keep_open = true },
+            { value = "reset", text = _("移除背景"), enabled = item ~= nil, keep_open = true },
+        }
+    end
+    local dlg
+    local function refreshDlg()
+        if dlg then pcall(function() dlg.items = makeItems(); dlg:refresh() end) end
+    end
+    local function save(mutate)
+        local c = Store.conf()
+        c.widget_bg = type(c.widget_bg) == "table" and c.widget_bg or {}
+        mutate(c.widget_bg)
+        if next(c.widget_bg) == nil then c.widget_bg = nil end
+        Store.save()
+        repaint(desktop)
+        refreshDlg()
+    end
+    dlg = choose(comp.label, makeItems, nil, function(value)
+        local c = Store.conf()
+        local all = type(c.widget_bg) == "table" and c.widget_bg or {}
+        local item = all[comp.id]
         if value == "pick" then
             pickPath(desktop, type(item) == "table" and item.src or nil, true, function(path)
                 save(function(bg)
@@ -507,18 +667,20 @@ local function widgetBgDialog(desktop, comp)
                     bg[comp.id].src = path
                 end)
             end)
-        elseif value == "fit" then
-            local items, order = {}, { "stretch", "fill", "fit", "tile" }
-            for _i, mode in ipairs(order) do
-                items[#items + 1] = { value = mode, text = _(fitLabels[mode]), mandatory = mode == fit and _("当前") or nil }
-            end
-            choose(_("填充方式"), items, nil, function(mode)
-                save(function(bg)
-                    bg[comp.id] = bg[comp.id] or {}
-                    bg[comp.id].fit = mode
-                end)
-            end)
+        elseif value == "anchor" then
+            local focus = type(item) == "table" and require("moonbeautify.view").focusOf(item.focus) or nil
+            chooseFocus(type(item) == "table" and item.src or nil,
+                focus, function(v)
+                    -- 只落盘不 repaint：避免全屏选区关闭后重建叠层导致拓展/设置页重现
+                    local cc = Store.conf()
+                    cc.widget_bg = type(cc.widget_bg) == "table" and cc.widget_bg or {}
+                    cc.widget_bg[comp.id] = cc.widget_bg[comp.id] or {}
+                    cc.widget_bg[comp.id].focus = { x = v.x, y = v.y, w = v.w, h = v.h }
+                    Store.save()
+                    refreshDlg()
+                end, desktop)
         elseif value == "veil" then
+            local veil = type(item) == "table" and tonumber(item.veil) or 0
             Spin:new{
                 title = _("内容提亮"),
                 fields = { {
@@ -533,6 +695,8 @@ local function widgetBgDialog(desktop, comp)
                 end,
             }:show()
         elseif value == "pad" then
+            local padMap = type(c.widget_pad) == "table" and c.widget_pad or {}
+            local pad = tonumber(padMap[comp.id]) or 0
             Spin:new{
                 title = _("内容内边距"),
                 fields = { {
@@ -540,13 +704,14 @@ local function widgetBgDialog(desktop, comp)
                     format = function(v) return (v <= 0) and _("关") or (v .. " px") end,
                 } },
                 callback = function(v)
-                    local c = Store.conf()
-                    c.widget_pad = type(c.widget_pad) == "table" and c.widget_pad or {}
+                    local cc = Store.conf()
+                    cc.widget_pad = type(cc.widget_pad) == "table" and cc.widget_pad or {}
                     local n = math.floor(v)
-                    c.widget_pad[comp.id] = n > 0 and n or nil
-                    if next(c.widget_pad) == nil then c.widget_pad = nil end
+                    cc.widget_pad[comp.id] = n > 0 and n or nil
+                    if next(cc.widget_pad) == nil then cc.widget_pad = nil end
                     Store.save()
                     repaint(desktop)
+                    refreshDlg()
                 end,
             }:show()
         elseif value == "reset" then
@@ -561,15 +726,16 @@ local function widgetBgPage(desktop)
     local conf = Store.conf()
     local all = type(conf.widget_bg) == "table" and conf.widget_bg or {}
     local items = {}
-    for _idx, comp in ipairs(componentList()) do
+    for _idx, comp in ipairs(decoratableComponents()) do
         items[#items + 1] = {
             value = comp.id,
             text = comp.label,
             mandatory = type(all[comp.id]) == "table" and _("已设") or nil,
+            keep_open = true,
         }
     end
     choose(_("组件背景"), items, nil, function(id)
-        for _i, comp in ipairs(componentList()) do
+        for _i, comp in ipairs(decoratableComponents()) do
             if comp.id == id then return widgetBgDialog(desktop, comp) end
         end
     end)
@@ -939,17 +1105,29 @@ end
 --- 组件花边总入口：逐个组件设置
 ---@param desktop table|nil
 local function widgetLacePage(desktop)
+    local Deco = require("moonbeautify.deco")
+    local focusOf = require("moonbeautify.view").focusOf
     local conf = Store.conf()
     local map = type(conf.widget_lace) == "table" and conf.widget_lace or {}
+    -- 取值兼容旧格式：字符串=纯路径；表={ src, fit, focus }
+    local function split(v)
+        if type(v) == "string" then return v ~= "" and v or nil, nil, nil end
+        if type(v) == "table" then
+            local p = v.src
+            return (type(p) == "string" and p ~= "") and p or nil, v.fit, focusOf(v.focus)
+        end
+        return nil, nil, nil
+    end
     local items = {}
     local labels = {}
-    for _idx, comp in ipairs(componentList()) do
+    for _idx, comp in ipairs(decoratableComponents()) do
         labels[comp.id] = comp.label
-        local own = map[comp.id]
+        local _src = split(map[comp.id])
         items[#items + 1] = {
             value = comp.id,
             text = comp.label,
-            mandatory = (type(own) == "string" and own ~= "" and _("已设置") or nil),
+            mandatory = _src and _("已设置") or nil,
+            keep_open = true,
         }
     end
     List:new{
@@ -958,25 +1136,57 @@ local function widgetLacePage(desktop)
         items = items,
         centered = true,
         on_select = function(value)
-            local current = type(map[value]) == "string" and map[value] or nil
-            choose(labels[value] or value, {
-                { value = "pick", text = _("选一张花边（透明 PNG）…") },
-                { value = "reset", text = _("移除花边"), enabled = current ~= nil },
-            }, nil, function(v)
+            local function nameOf(path)
+                if type(path) ~= "string" or path == "" then return nil end
+                return path:match("([^/]+)$") or path
+            end
+            local function makeItems()
                 local c = Store.conf()
+                local m = type(c.widget_lace) == "table" and c.widget_lace or {}
+                local current, mode, focus = split(m[value])
+                if not Deco.MODES[mode] then mode = "stretch" end
+                local name = nameOf(current)
+                return {
+                    { value = "pick", text = name and T(_("更换花边：%1"), name) or _("选一张花边（透明 PNG）…"), keep_open = true },
+                    { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
+                    { value = "reset", text = _("移除花边"), enabled = current ~= nil, keep_open = true },
+                }
+            end
+            local dlg
+            local function refreshDlg()
+                if dlg then pcall(function() dlg.items = makeItems(); dlg:refresh() end) end
+            end
+            dlg = choose(labels[value] or value, makeItems, nil, function(v)
+                local c = Store.conf()
+                local m = type(c.widget_lace) == "table" and c.widget_lace or {}
+                local current, mode, focus = split(m[value])
+                if not Deco.MODES[mode] then mode = "stretch" end
+                -- 保留已有字段；没选图也能先设 fit/选区，选图时一起写回
+                local function write(src, fit_mode, fit_focus, quiet)
+                    local cc = Store.conf()
+                    cc.widget_lace = type(cc.widget_lace) == "table" and cc.widget_lace or {}
+                    cc.widget_lace[value] = { src = src, fit = fit_mode, focus = fit_focus }
+                    require("moonbeautify.deco").clear()
+                    Store.save()
+                    -- 全屏选区关闭后不重建叠层，否则会把底下的拓展/设置页重画出来
+                    if not quiet then repaint(desktop) end
+                    refreshDlg()
+                end
                 if v == "pick" then
-                    pickPath(desktop, current, true, function(path)
-                        c.widget_lace = type(c.widget_lace) == "table" and c.widget_lace or {}
-                        c.widget_lace[value] = path
-                        Store.save()
-                        repaint(desktop)
-                    end)
+                    pickPath(desktop, current, true, function(path) write(path, mode, focus) end)
+                elseif v == "anchor" then
+                    chooseFocus(current, focus, function(v2)
+                        write(current, mode, { x = v2.x, y = v2.y, w = v2.w, h = v2.h }, true)
+                    end, desktop)
                 elseif v == "reset" then
-                    c.widget_lace = type(c.widget_lace) == "table" and c.widget_lace or {}
-                    c.widget_lace[value] = nil
-                    if next(c.widget_lace) == nil then c.widget_lace = nil end
+                    local cc = Store.conf()
+                    cc.widget_lace = type(cc.widget_lace) == "table" and cc.widget_lace or {}
+                    cc.widget_lace[value] = nil
+                    if next(cc.widget_lace) == nil then cc.widget_lace = nil end
+                    require("moonbeautify.deco").clear()
                     Store.save()
                     repaint(desktop)
+                    refreshDlg()
                 end
             end)
         end,

@@ -39,6 +39,28 @@ local function heightOf(prefix, opts)
     return { height = math.max(60, math.floor(w * RATIO)) }
 end
 
+--- 相框组件：一叠照片，左右滑动翻看。高度按宽度给一个偏方的比例。
+--- 别设太高：超高组件占满整页会把首页翻页条和滑动翻页空间挤没。
+local FRAME_RATIO = 0.62
+local function frameWidget(id, title)
+    local prefix = id .. "_"
+    return {
+        id = id,
+        title = _(title),
+        icon = "image",
+        heightRange = function(_ctx, opts)
+            local w = (opts and opts.width) or 540
+            return { height = math.max(80, math.floor(w * FRAME_RATIO)) }
+        end,
+        build = function(_ctx, w, h)
+            return require("moonbeautify.frame").build(w, h, prefix)
+        end,
+        settings = function(desktop, _id)
+            require("moonbeautify.settings").showFrame(prefix, desktop)
+        end,
+    }
+end
+
 --- 造一个吧唧组件。月读的首页组件按 id 唯一，所以想放多个吧唧就得有多个 id，
 --- 每个 id 用「id + 下划线」当自己的配置前缀（badge_ / badge2_ / ...），互不干扰。
 ---@param id string
@@ -71,6 +93,8 @@ return {
             badgeWidget("badge2", "吧唧 2"),
             badgeWidget("badge3", "吧唧 3"),
             badgeWidget("badge4", "吧唧 4"),
+            frameWidget("frame", "相框"),
+            frameWidget("frame2", "相框 2"),
         },
         features = {
             setting = {

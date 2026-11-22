@@ -26,6 +26,7 @@ local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 
 local Effects = require("moonbeautify.effects")
+local Fit = require("moonbeautify.fit")
 
 local C8 = Blitbuffer.Color8
 
@@ -293,11 +294,115 @@ end
 
 
 
+-- 原图尺寸缓存（重算底图时不用反复解码原尺寸）
+local native = {}
+
+--- 读原图尺寸（只解一次，解完立刻释放）
+---@param path string
+---@return number|nil, number|nil
+local function nativeSize(path)
+    local hit = native[path]
+    if hit then return hit[1], hit[2] end
+    local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
+    if not ok or not bb then return nil, nil end
+    local w, h = bb:getWidth(), bb:getHeight()
+    bb:free()
+    native[path] = { w, h }
+    return w, h
+end
+
+--- 按填充方式算出「要渲染多大」，与背景/花边/相框共用同一套规则
+local function scaledSize(iw, ih, w, h, mode)
+    if mode == "fill" then
+        local s = math.max(w / iw, h / ih)
+        return math.max(1, math.ceil(iw * s)), math.max(1, math.ceil(ih * s))
+    elseif mode == "fit" then
+        local s = math.min(w / iw, h / ih)
+        return math.max(1, math.ceil(iw * s)), math.max(1, math.ceil(ih * s))
+    end
+    return w, h
+end
+
+--- 把解出的 bb 按填充方式/选区摆进 w×h；返回一块新缓冲（入参一律释放）
+--- badge 底图只用灰度，全程逐像素 getPixel 采样，不碰跨类型 blit。
+---@param src table
+---@param w number
+---@param h number
+---@param mode string
+---@param ax number|nil fill 取景焦点 x
+---@param ay number|nil fill 取景焦点 y
+---@param focus table|nil { x, y, w, h } 选区（0..1），给出时优先
+---@return table|nil
+local function place(src, w, h, mode, ax, ay, focus)
+    local sw, sh = src:getWidth(), src:getHeight()
+    local out = Blitbuffer.new(w, h, Blitbuffer.TYPE_BB8A)
+    local C8A = Blitbuffer.Color8A
+    local sx0, sy0, ox, oy
+    if focus then
+        -- 选区矩形（相对当前源），选区等比放大盖满目标、居中裁
+        local fx = math.max(0, math.min(1, focus.x or 0))
+        local fy = math.max(0, math.min(1, focus.y or 0))
+        local fw = math.max(0.01, math.min(1 - fx, focus.w or 1))
+        local fh = math.max(0.01, math.min(1 - fy, focus.h or 1))
+        local rsx, rsy = math.floor(fx * sw), math.floor(fy * sh)
+        local rsw, rsh = math.max(1, math.floor(fw * sw)), math.max(1, math.floor(fh * sh))
+        -- 目标 (x,y) 落到选区的哪个源点：选区按 max(w/rsw,h/rsh) 放大后居中
+        local sc = math.max(w / rsw, h / rsh)
+        ox = math.max(0, math.floor((rsw * sc - w) / 2))
+        oy = math.max(0, math.floor((rsh * sc - h) / 2))
+        for y = 0, h - 1 do
+            for x = 0, w - 1 do
+                local px = rsx + math.floor((x + ox) / sc)
+                local py = rsy + math.floor((y + oy) / sc)
+                if px >= sw then px = sw - 1 end
+                if py >= sh then py = sh - 1 end
+                out:setPixel(x, y, C8A(math.floor(src:getPixel(px, py):getColor8().a), 255))
+            end
+        end
+        pcall(function() src:free() end)
+        return out
+    end
+    if mode == "fill" then
+        sx0 = math.floor((sw - w) * (ax or 0.5))
+        sy0 = math.floor((sh - h) * (ay or 0.5))
+    elseif mode == "fit" then
+        ox = math.floor((w - sw) / 2)
+        oy = math.floor((h - sh) / 2)
+    end
+    for y = 0, h - 1 do
+        for x = 0, w - 1 do
+            local g
+            if mode == "fit" then
+                local px, py = x - ox, y - oy
+                g = (px >= 0 and px < sw and py >= 0 and py < sh)
+                    and src:getPixel(px, py):getColor8().a or 255
+            else
+                local px, py
+                if mode == "fill" then
+                    px, py = sx0 + x, sy0 + y
+                else
+                    px, py = math.floor(x * sw / w), math.floor(y * sh / h)
+                end
+                if px >= sw then px = sw - 1 end
+                if py >= sh then py = sh - 1 end
+                g = src:getPixel(px, py):getColor8().a
+            end
+            out:setPixel(x, y, C8A(math.floor(g), 255))
+        end
+    end
+    pcall(function() src:free() end)
+    return out
+end
+
 --- 取当前该用的源图：动图取当前帧（解过的留着复用），静态图现解一张
 ---@param widget table
 ---@return table|nil bb, boolean own
 local function sourceOf(widget)
     local w, h = widget.dimen.w, widget.dimen.h
+    -- 统一只用「填满裁边」
+    local mode = "fill"
+    local ax, ay = widget.ax, widget.ay
+    local focus = widget.focus
     if widget.frames then
         local n = #widget.frames
         if n < 1 then return nil end
@@ -317,15 +422,33 @@ local function sourceOf(widget)
             end
             local ok, got = pcall(widget.frames[i])
             if ok and got then
-                bb = got
-                cache[i] = got
+                -- 帧是按渲染尺寸解出的，这里统一按填充方式摆成 w×h
+                bb = place(got, w, h, mode, ax, ay, focus)
+                cache[i] = bb
             end
         end
         return bb, false
     end
-    local ok, bb = pcall(function() return RenderImage:renderImageFile(widget.src, false, w, h) end)
-    if ok and bb then return bb, true end
-    return nil
+    local iw, ih = nativeSize(widget.src)
+    local sw, sh = w, h
+    if iw and ih and iw > 0 and ih > 0 then
+        if focus then
+            -- 选区：按「选区放大盖满目标」的倍率解码整图，place 里按同比例取选区
+            local fx = math.max(0, math.min(1, focus.x or 0))
+            local fy = math.max(0, math.min(1, focus.y or 0))
+            local fw = math.max(0.01, math.min(1 - fx, focus.w or 1))
+            local fh = math.max(0.01, math.min(1 - fy, focus.h or 1))
+            local sc = math.max(w / (fw * iw), h / (fh * ih))
+            local cap = math.min(4096 / iw, 4096 / ih)
+            if sc > cap then sc = cap end
+            sw, sh = math.max(1, math.ceil(iw * sc)), math.max(1, math.ceil(ih * sc))
+        else
+            sw, sh = scaledSize(iw, ih, w, h, mode)
+        end
+    end
+    local ok, decoded = pcall(function() return RenderImage:renderImageFile(widget.src, false, sw, sh) end)
+    if not ok or not decoded then return nil end
+    return place(decoded, w, h, mode, ax, ay, focus), true
 end
 
 --- 重算底图（角度或帧变了才真的算）
@@ -381,7 +504,10 @@ local function tick()
             if w.frames and #w.frames > 1 then
                 w.frame = ((w.frame or 1) % #w.frames) + 1
             end
-            if compose(w) then
+            -- compose 里会重新解码叠加素材等，任何单个 widget 出错都不能中断整条 tick，
+            -- 否则 running 停在 false、所有吧唧动画永久停摆。这里逐个兜住。
+            local ok = pcall(compose, w)
+            if ok then
                 -- KOReader 的 setDirty(widget, mode, region, dither)：region 必须是 Geom。
                 -- "all" 把顶层窗口标脏（_repaint 只画脏控件，吧唧是嵌入控件，必须靠它被画到），
                 -- Geom 区域把 e-ink 刷新限制在吧唧范围内，整页只重绘缓冲不上屏。
@@ -429,13 +555,22 @@ end
 ---@param w number 可用宽
 ---@param h number 可用高
 ---@param src string 已确定的一张图
----@param opts table|nil { shape, effects, overlay, spin, ring }
+---@param opts table|nil { shape, effects, overlay, spin, ring, fit, ax, ay }
 ---@return table|nil
 function Badge.widget(w, h, src, opts)
     if type(src) ~= "string" or src == "" then return nil end
     opts = opts or {}
     -- 三种形状都是「正方形内切」，只是圆角不同
     local d = math.max(24, math.floor(math.min(w, h)))
+    -- 统一只用「填满裁边」
+    local mode = "fill"
+    local ax = math.max(0, math.min(1, tonumber(opts.ax) or 0.5))
+    local ay = math.max(0, math.min(1, tonumber(opts.ay) or 0.5))
+    local iw, ih = nativeSize(src)
+    local sw, sh = d, d
+    if iw and ih and iw > 0 and ih > 0 then
+        sw, sh = scaledSize(iw, ih, d, d, mode)
+    end
     local effects = effectsOf(opts.effects)
     local period = tonumber(opts.spin) or 0
     -- 光环：true 或合法样式字符串都开（旧配置的 beads/lace 统一按双线处理）
@@ -453,13 +588,17 @@ function Badge.widget(w, h, src, opts)
     local lower = src:lower()
     local maybe_anim = opts.anim ~= false and (lower:match("%.gif$") ~= nil or lower:match("%.webp$") ~= nil)
     if maybe_anim then
-        local ok, got = pcall(function() return RenderImage:renderImageFile(src, true, d, d) end)
+        local ok, got = pcall(function() return RenderImage:renderImageFile(src, true, sw, sh) end)
         if ok and type(got) == "table" and #got > 1 then frames = got end
     end
 
     local widget = Painted:new{
         dimen = Geom:new{ w = d, h = d },
         src = src,
+        fit = mode,
+        ax = ax,
+        ay = ay,
+        focus = type(opts.focus) == "table" and opts.focus or nil,
         shape = opts.shape or "circle",
         overlay = opts.overlay,
         effects = effects,

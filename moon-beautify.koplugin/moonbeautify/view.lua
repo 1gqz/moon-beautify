@@ -142,6 +142,18 @@ local SIZE_SCALE = { s = 0.60, m = 0.80, l = 1.00 }
 ---@param h number
 ---@param prefix string|nil 配置前缀，缺省 "badge_"
 ---@return table
+--- 读选区配置：{ x, y, w, h }（0..1）。非法或缺省返回 nil。
+---@param value any
+---@return table|nil
+function View.focusOf(value)
+    if type(value) ~= "table" then return nil end
+    local x, y = tonumber(value.x), tonumber(value.y)
+    local w, h = tonumber(value.w), tonumber(value.h)
+    if not (x and y and w and h) then return nil end
+    if w <= 0 or h <= 0 then return nil end
+    return { x = x, y = y, w = w, h = h }
+end
+
 function View.badge(w, h, prefix)
     prefix = prefix or "badge_"
     local conf = Store.conf()
@@ -159,6 +171,10 @@ function View.badge(w, h, prefix)
         overlay = conf[prefix .. "overlay"],
         spin = tonumber(conf[prefix .. "spin"]) or 0,
         ring = conf[prefix .. "ring"],
+        fit = Store.enum(conf, prefix .. "fit", { stretch = true, fill = true, fit = true }, "stretch"),
+        ax = tonumber(conf[prefix .. "anchor_x"]) or 0.5,
+        ay = tonumber(conf[prefix .. "anchor_y"]) or 0.5,
+        focus = View.focusOf(conf[prefix .. "focus"]),
     }
     local ok, widget = pcall(require("moonbeautify.badge").widget,
         math.max(24, math.floor(w * scale)), math.max(24, math.floor(h * scale)), src, opts)
@@ -180,16 +196,21 @@ end
 ---@param inner table 组件内容
 ---@param lace string|nil 花边（带透明通道的 PNG，画在内容之上）
 ---@param fit string|nil 背景填充方式：stretch / fill / fit / tile
+---@param laceFit string|nil 花边填充方式：stretch / fill / fit
+---@param anchor table|nil 背景 fill 的取景焦点 { x, y }
+---@param laceAnchor table|nil 花边 fill 的取景焦点 { x, y }
+---@param focus table|nil 背景选区 { x, y, w, h }，给出时优先于 fit/anchor
+---@param laceFocus table|nil 花边选区 { x, y, w, h }
 ---@return table
-function View.background(w, h, src, veil, inner, lace, fit)
+function View.background(w, h, src, veil, inner, lace, fit, laceFit, anchor, laceAnchor, focus, laceFocus)
     local stack = Stack:new{ dimen = Geom:new{ w = w, h = h } }
     if type(src) == "string" and src ~= "" then
-        stack[1] = require("moonbeautify.bg").layer(src, w, h, fit)
+        stack[1] = require("moonbeautify.bg").layer(src, w, h, fit, anchor, focus)
     end
     stack[2] = inner
     stack.veil = veil
     if type(lace) == "string" and lace ~= "" then
-        stack.lace = require("moonbeautify.deco").frame(lace, w, h)
+        stack.lace = require("moonbeautify.deco").frame(lace, w, h, laceFit, laceAnchor, laceFocus)
     end
     return stack
 end

@@ -32,6 +32,7 @@ local Rows = {}
 ---@return table<string, { index: number, ids: string[] }>
 local function groupIndex(groups)
     local out = {}
+    if type(groups) ~= "table" then return out end
     for gi, group in ipairs(groups) do
         if type(group) == "table" and #group >= 2 then
             for _i, id in ipairs(group) do
