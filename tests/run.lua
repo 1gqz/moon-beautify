@@ -3,7 +3,7 @@ local here = debug.getinfo(1, "S").source:match("^@(.*)/[^/]+$") or "."
 package.path = here .. "/?.lua;" .. package.path
 local T = require("helper")
 
-for _, name in ipairs({ "test_parts", "test_theme", "test_part_copy" }) do
+for _, name in ipairs({ "test_parts", "test_theme", "test_part_copy", "test_l10n", "test_moon_check" }) do
     dofile(here .. "/" .. name .. ".lua")
 end
 

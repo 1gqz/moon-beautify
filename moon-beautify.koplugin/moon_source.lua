@@ -4,14 +4,19 @@
 契约（api = 1，id = ext.<name>，provides.source = false）：
   home_widgets 简写表 { id, title, icon, build = fun(ctx, w, h), heightRange = fun(ctx, opts), settings = fun(desktop, id) }
   build 返回占满 w × h 的控件；settings 让首页编辑态出现设置按钮（设置里抛错会被月读记日志）。
-  provides.features.setting 往「设置 → 外观」加外观与主题入口。
+  provides.features.setting 往「设置 → 外观」加「月华美化」页，全部配置项都在里面。
 组件 id 由月读补成 ext.beautify.<短名>，发布后不要改。
 
 --]]
 
-local _ = require("gettext")
+local _ = require("moonbeautify.l10n")
 
 local ID = "ext.beautify"
+
+-- 月读低于 0.8.0：不装补丁、不登记任何能力，提示由 main.lua 弹。
+if require("moonbeautify.core.moon_check").problem() then
+    return { api = 1, id = ID, provides = { source = false } }
+end
 
 -- 加载信号：月读首次访问源注册表时 dofile 本文件；日志里有这行说明描述表被认了。
 pcall(function()
@@ -21,10 +26,10 @@ pcall(function()
 end)
 
 -- 补丁：图标图片化 / 底栏换图 / 组件背景。必须在首页第一次 build 之前装上（本文件就是那个时机）。
-pcall(function() require("moonbeautify.patch").install() end)
+pcall(function() require("moonbeautify.core.patch").install() end)
 
 -- 更新检查：挂到「桌面回到前台」，每天最多查一次（和月读自己的更新检查同一个事件）
-pcall(function() require("moonbeautify.update").install() end)
+pcall(function() require("moonbeautify.core.update").install() end)
 
 --- 高度按可用宽度的比例报，跟屏幕大小无关；用户在编辑态里还能自己拖。
 --- 这里按「最大档」给足高度，具体直径由设置里的尺寸决定（s/m/l 缩放边长），
@@ -45,17 +50,17 @@ local function frameWidget(id, title)
     local prefix = id .. "_"
     return {
         id = id,
-        title = _(title),
+        title = title,
         icon = "image",
         heightRange = function(_ctx, opts)
             local w = (opts and opts.width) or 540
             return { height = math.max(80, math.floor(w * FRAME_RATIO)) }
         end,
         build = function(_ctx, w, h)
-            return require("moonbeautify.frame").build(w, h, prefix)
+            return require("moonbeautify.widgets.frame").build(w, h, prefix)
         end,
         settings = function(desktop, _id)
-            require("moonbeautify.settings").showFrame(prefix, desktop)
+            require("moonbeautify.ui.widget_page").showFrame(prefix, desktop)
         end,
     }
 end
@@ -69,15 +74,15 @@ local function badgeWidget(id, title)
     local prefix = id .. "_"
     return {
         id = id, -- 月读补成 ext.beautify.<id>
-        title = _(title),
+        title = title,
         icon = "image",
         heightRange = function(_ctx, opts) return heightOf(opts) end,
         build = function(_ctx, w, h)
-            return require("moonbeautify.view").badge(w, h, prefix)
+            return require("moonbeautify.widgets.view").badge(w, h, prefix)
         end,
         settings = function(desktop, _id)
             -- 不在这里 pcall：月读的 guard 会 pcall 并记日志，套两层会把错误吞掉。
-            require("moonbeautify.settings").show(prefix, desktop)
+            require("moonbeautify.ui.widget_page").show(prefix, desktop)
         end,
     }
 end
@@ -88,17 +93,17 @@ return {
     provides = {
         source = false,
         home_widgets = {
-            badgeWidget("badge", "吧唧1"),
-            badgeWidget("badge2", "吧唧2"),
-            badgeWidget("badge3", "吧唧3"),
-            badgeWidget("badge4", "吧唧4"),
-            frameWidget("frame", "相框1"),
-            frameWidget("frame2", "相框2"),
+            badgeWidget("badge", _("吧唧1")),
+            badgeWidget("badge2", _("吧唧2")),
+            badgeWidget("badge3", _("吧唧3")),
+            badgeWidget("badge4", _("吧唧4")),
+            frameWidget("frame", _("相框1")),
+            frameWidget("frame2", _("相框2")),
         },
         features = {
             setting = {
                 entries = function(desktop)
-                    return require("moonbeautify.settings").entries(desktop)
+                    return require("moonbeautify.ui.settings").entries(desktop)
                 end,
             },
         },
