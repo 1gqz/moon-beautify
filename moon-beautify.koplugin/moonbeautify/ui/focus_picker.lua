@@ -3,7 +3,7 @@
 图片可缩放，松手后点「确定」把选区 {x,y,w,h}（0..1，相对原图）回调。
 
 安全要点：
-- 预览图复用 moonbeautify.bg 的 layer（blit 到 framebuffer，项目验证过），
+- 预览图复用 moonbeautify.render.bg 的 layer（blit 到 framebuffer，项目验证过），
   不自建 BB8A 做跨类型 blit；选区框只用 framebuffer 的 paintRect 画线。
 - 缩放只改变预览显示尺寸（整数倍放大解码），选区坐标始终相对原图 0..1。
 
@@ -12,7 +12,7 @@
 - 双指缩放 / 底部 + − 按钮 = 放大缩小预览（便于精确选）
 - 底部「取消」「确定」：确定回调选区，取消直接关；返回键 = 取消
 
-@module moonbeautify.focus_picker
+@module moonbeautify.ui.focus_picker
 --]]
 
 local Device = require("device")
@@ -23,7 +23,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Modal = require("ui.themes.widgets.modal")
 local Text = require("ui.themes.widgets.text")
 local Theme = require("ui.themes")
-local _ = require("gettext")
+local _ = require("moonbeautify.l10n")
 
 local Screen = Device.screen
 
@@ -99,7 +99,7 @@ function Picker:init()
 
     self.iw, self.ih = nil, nil
     if type(self.path) == "string" and self.path ~= "" then
-        self.iw, self.ih = require("moonbeautify.bg").nativeSize(self.path)
+        self.iw, self.ih = require("moonbeautify.render.bg").nativeSize(self.path)
         if self.iw and (self.iw < 1 or self.ih < 1) then self.iw, self.ih = nil, nil end
     end
     self.zoom = 1
@@ -166,9 +166,9 @@ function Picker:rebuildImage()
         if needEndRefresh then
             -- 老 Kindle 上 bg 的跨类型 blit 回退会把透明区画成黑块；
             -- deco 先规范化成 BB8A 再混合，和花边图走的是同一条安全路径。
-            return require("moonbeautify.deco").frame(self.path, dw, dh)
+            return require("moonbeautify.render.deco").frame(self.path, dw, dh)
         end
-        return require("moonbeautify.bg").layer(self.path, dw, dh, "stretch", nil)
+        return require("moonbeautify.render.bg").layer(self.path, dw, dh, "stretch", nil)
     end)
     self.layer = ok and layer or nil
     self.img = Geom:new{
@@ -264,8 +264,8 @@ function Picker:paintTo(bb, x, y)
     bb:paintRect(x + r.x, y + r.y, lw, r.h, ink)
     bb:paintRect(x + r.x + r.w - lw, y + r.y, lw, r.h, ink)
     local hz = math.max(8, math.floor(HANDLE / 2))
-    for _, hx in ipairs({ r.x, r.x + r.w }) do
-        for _, hy in ipairs({ r.y, r.y + r.h }) do
+    for _i, hx in ipairs({ r.x, r.x + r.w }) do
+        for _i, hy in ipairs({ r.y, r.y + r.h }) do
             bb:paintRect(x + hx - hz, y + hy - hz, hz * 2, hz * 2, ink)
         end
     end
@@ -427,8 +427,8 @@ function Picker:close()
     self._closed = true
     UIManager:close(self, "ui")
     -- 每一档缩放都解码过一张预览，关窗后不再需要
-    require("moonbeautify.bg").clear()
-    require("moonbeautify.deco").clear()
+    require("moonbeautify.render.bg").clear()
+    require("moonbeautify.render.deco").clear()
 end
 
 function Picker:onSetRotationMode()
