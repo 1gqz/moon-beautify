@@ -5,7 +5,7 @@
 - 图片用月读的 ui.themes.widgets.image：本地路径直接解，没出图前透出表面底色。
 - "保持比例"对应内核 stretch = false（按比例缩进目标框），"填满"是 stretch = true（拉满，可能变形）。
 
-@module moonbeautify.view
+@module moonbeautify.widgets.view
 --]]
 
 local Theme = require("ui/themes")
@@ -16,7 +16,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Geom = require("ui/geometry")
 local Text = require("ui.themes.widgets.text")
 
-local Store = require("moonbeautify.store")
+local Store = require("moonbeautify.core.store")
+local _ = require("moonbeautify.l10n")
 
 local View = {}
 
@@ -106,10 +107,10 @@ function View.pickSrc(conf, prefix)
     if pick == "folder" then
         local dir = conf[prefix .. "dir"]
         if type(dir) ~= "string" or dir == "" then return nil, false end
-        local list = require("moonbeautify.pick").listImages(dir)
+        local list = require("moonbeautify.core.pick").listImages(dir)
         if #list == 0 then return nil, true end
         local mode = Store.enum(conf, prefix .. "mode", { daily = true, shuffle = true }, "daily")
-        return require("moonbeautify.pick").choose(list, mode), true
+        return require("moonbeautify.core.pick").choose(list, mode), true
     end
     local src = conf[prefix .. "src"]
     if type(src) ~= "string" or src == "" then return nil, false end
@@ -158,10 +159,10 @@ function View.badge(w, h, prefix)
     prefix = prefix or "badge_"
     local conf = Store.conf()
     local src = View.pickSrc(conf, prefix)
-    local slots = require("moonbeautify.slots").build(w, h, conf[prefix .. "slots"])
+    local slots = require("moonbeautify.widgets.slots").build(w, h, conf[prefix .. "slots"])
     if not src then
         if slots then return mount(w, h, slots, View.placeholder(w, h, "")) end
-        return View.placeholder(w, h, "在组件设置里选一张图或一个文件夹")
+        return View.placeholder(w, h, _("在组件设置里选一张图或一个文件夹"))
     end
     local size = Store.enum(conf, prefix .. "size", { s = true, m = true, l = true }, "m")
     local scale = SIZE_SCALE[size] or SIZE_SCALE.m
@@ -176,7 +177,7 @@ function View.badge(w, h, prefix)
         ay = tonumber(conf[prefix .. "anchor_y"]) or 0.5,
         focus = View.focusOf(conf[prefix .. "focus"]),
     }
-    local ok, widget = pcall(require("moonbeautify.badge").widget,
+    local ok, widget = pcall(require("moonbeautify.widgets.badge").widget,
         math.max(24, math.floor(w * scale)), math.max(24, math.floor(h * scale)), src, opts)
     if not ok then
         pcall(function() require("utils.log").warn("moonbeautify badge:", tostring(widget)) end)
@@ -203,12 +204,12 @@ end
 function View.background(w, h, src, veil, inner, lace, fit, anchor, focus, laceFocus)
     local stack = Stack:new{ dimen = Geom:new{ w = w, h = h } }
     if type(src) == "string" and src ~= "" then
-        stack[1] = require("moonbeautify.bg").layer(src, w, h, fit, anchor, focus)
+        stack[1] = require("moonbeautify.render.bg").layer(src, w, h, fit, anchor, focus)
     end
     stack[2] = inner
     stack.veil = veil
     if type(lace) == "string" and lace ~= "" then
-        stack.lace = require("moonbeautify.deco").frame(lace, w, h, laceFocus)
+        stack.lace = require("moonbeautify.render.deco").frame(lace, w, h, laceFocus)
     end
     return stack
 end

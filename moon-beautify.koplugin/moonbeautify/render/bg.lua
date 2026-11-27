@@ -14,7 +14,7 @@
 - 用 alphablitFrom（透明处按 alpha 混合），图案 PNG 的透明区域能透出页面底色。
 - 全部包 pcall：解码失败就不画（该组件退回纯页面底色），不影响首页渲染。
 
-@module moonbeautify.bg
+@module moonbeautify.render.bg
 --]]--
 
 local RenderImage = require("ui/renderimage")
@@ -22,11 +22,12 @@ local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 local Blitbuffer = require("ffi/blitbuffer")
 local Theme = require("ui/themes")
+local Image = require("utils.image")
 
 local Bg = {}
 
---- 支持的填充方式 → 设置界面显示名（统一取自 moonbeautify.fit）
-local Fit = require("moonbeautify.fit")
+--- 支持的填充方式 → 设置界面显示名（统一取自 moonbeautify.render.fit）
+local Fit = require("moonbeautify.render.fit")
 Bg.MODES = {
     stretch = Fit.LABEL.stretch,
     fill = Fit.LABEL.fill,
@@ -39,16 +40,19 @@ local native = {}
 --- 缩放结果缓存
 local cache = {}
 
---- 读原图尺寸（只解一次，解完立刻释放）
+--- 读原图尺寸：先读文件头，认不出（svg 等）才整图解一次，解完立刻释放
 ---@param path string
 ---@return number|nil, number|nil
 local function nativeSize(path)
     local hit = native[path]
     if hit then return hit[1], hit[2] end
-    local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
-    if not ok or not bb then return nil, nil end
-    local w, h = bb:getWidth(), bb:getHeight()
-    bb:free()
+    local w, h = Image.dimensions(path)
+    if not w then
+        local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
+        if not ok or not bb then return nil, nil end
+        w, h = bb:getWidth(), bb:getHeight()
+        bb:free()
+    end
     native[path] = { w, h }
     return w, h
 end

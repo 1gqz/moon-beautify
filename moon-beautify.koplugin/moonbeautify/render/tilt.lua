@@ -9,14 +9,14 @@
 - 像素只取 :getColor8().a 写进 BB8A，全程不碰跨类型 blit（沿用已验证路线）；
 - 整条链路包 pcall，失败返回 nil 让调用方回退彩色图块。
 
-@module moonbeautify.tilt
+@module moonbeautify.render.tilt
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
 local RenderImage = require("ui/renderimage")
 local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
-local nativeSize = require("moonbeautify.bg").nativeSize
+local nativeSize = require("moonbeautify.render.bg").nativeSize
 
 local C8A = Blitbuffer.Color8A
 local Tilt = {}

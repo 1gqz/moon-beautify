@@ -3,7 +3,7 @@
 单独一行时 8 格全显示；并排（组合，半宽）时只显示中间两列，
 也就是上排的 2、3 格和下排的 6、7 格，四角的 1、4、5、8 格不显示。
 
-@module moonbeautify.slots
+@module moonbeautify.widgets.slots
 --]]
 
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -19,7 +19,7 @@ local Slots = {}
 --- 当前显示哪几格：并排时半宽，只留中间两列（上 2、3 / 下 6、7）；满宽时 1–8 全显示
 ---@return number[]
 function Slots.indices()
-    if require("moonbeautify.rows").dense then return { 2, 3, 6, 7 } end
+    if require("moonbeautify.widgets.rows").dense then return { 2, 3, 6, 7 } end
     return { 1, 2, 3, 4, 5, 6, 7, 8 }
 end
 

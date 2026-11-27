@@ -1,5 +1,5 @@
 local T = require("helper")
-local Parts = require("moonbeautify.parts")
+local Parts = require("moonbeautify.themes.parts")
 
 local function copy(v)
     if type(v) ~= "table" then return v end

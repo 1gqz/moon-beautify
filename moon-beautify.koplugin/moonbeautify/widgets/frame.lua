@@ -11,7 +11,7 @@
   fit               single 的填充方式 stretch|fill|fit
   anchor_x / y      fill 时的取景焦点，0..1，缺省居中
 
-@module moonbeautify.frame
+@module moonbeautify.widgets.frame
 --]]--
 
 local UIManager = require("ui/uimanager")
@@ -24,12 +24,12 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local BD = require("ui/bidi")
 local Theme = require("ui/themes")
 local Text = require("ui/themes.widgets.text")
-local _ = require("gettext")
+local _ = require("moonbeautify.l10n")
 
-local Store = require("moonbeautify.store")
-local Pick = require("moonbeautify.pick")
-local Bg = require("moonbeautify.bg")
-local Tilt = require("moonbeautify.tilt")
+local Store = require("moonbeautify.core.store")
+local Pick = require("moonbeautify.core.pick")
+local Bg = require("moonbeautify.render.bg")
+local Tilt = require("moonbeautify.render.tilt")
 
 local Frame = {}
 
@@ -70,7 +70,7 @@ local function anchorOf(c, prefix)
 end
 
 local function focusOf(c, prefix)
-    return require("moonbeautify.view").focusOf(c[prefix .. "focus"])
+    return require("moonbeautify.widgets.view").focusOf(c[prefix .. "focus"])
 end
 
 local function placeholder(W, H, avail_w)

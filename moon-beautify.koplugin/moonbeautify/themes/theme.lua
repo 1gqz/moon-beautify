@@ -12,20 +12,25 @@ theme.lua 里图片路径写成 "@assets/文件名"，应用时替换成主题�
 
 - 保存主题：把当前配置快照成主题（图片收编进 assets），不改变“应用中”的主题
 - 应用主题：合并回当前配置（排除 last_dir 等本机状态键），改过的配置随时能切回来
-- 导出 zip：theme.lua + assets 打包（moonbeautify.zip，STORED）
+- 导出 zip：theme.lua + assets 打包（KOReader 自带的 ffi/archiver.Writer，STORED）
 - 导入 zip：解到主题目录（用月读自带的 ffi/archiver.Reader），名字取包内 theme.lua 的
   name 字段，没有就用 zip 文件名；同名主题直接覆盖
 
 zip 包是一段 Lua 代码 + 图片，导入等于执行 theme.lua——只导入自己信任的文件。
 
-@module moonbeautify.theme
+@module moonbeautify.themes.theme
 --]]--
 
 local lfs = require("libs/libkoreader-lfs")
 local Log = require("utils.log")
-local Parts = require("moonbeautify.parts")
-local WallpaperPart = require("moonbeautify.wallpaper_part")
-local LockscreenPart = require("moonbeautify.lockscreen_part")
+local Fs = require("utils.fs")
+local Image = require("utils.image")
+local Paths = require("utils.paths")
+local Pick = require("moonbeautify.core.pick")
+local _ = require("moonbeautify.l10n")
+local Parts = require("moonbeautify.themes.parts")
+local WallpaperPart = require("moonbeautify.themes.wallpaper_part")
+local LockscreenPart = require("moonbeautify.themes.lockscreen_part")
 
 local Theme = {}
 
@@ -42,25 +47,7 @@ local LOCAL_KEYS = {
 }
 for k in pairs(Parts.LOCAL_KEYS) do LOCAL_KEYS[k] = true end
 
-local IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true, bmp = true }
 local ASSET_MARK = "@assets/"
-
---- 逐级建目录：lfs.mkdir 只建最后一级，父目录缺失时会失败（Kindle 首次保存就栽在这）
----@param path string 绝对或相对路径
----@return boolean
-local function mkdirp(path)
-    if lfs.attributes(path, "mode") == "directory" then return true end
-    local abs = path:sub(1, 1) == "/"
-    local acc, first = abs and "/" or "", true
-    for seg in path:gmatch("[^/]+") do
-        acc = (first and abs) and acc .. seg or (acc == "" and seg or acc .. "/" .. seg)
-        first = false
-        if lfs.attributes(acc, "mode") ~= "directory" and not lfs.mkdir(acc) then
-            return false
-        end
-    end
-    return lfs.attributes(path, "mode") == "directory"
-end
 
 local function note(...)
     local args = { ... }
@@ -79,7 +66,6 @@ end
 
 function Theme.root()
     if Theme._root then return Theme._root end
-    local Paths = require("utils.paths")
     return Paths.root() .. "/beautify/themes"
 end
 
@@ -103,21 +89,6 @@ function Theme.dir(name)
     return Theme.root() .. "/" .. safe
 end
 
---- 删目录树
----@param path string
----@return boolean
-local function removeTree(path)
-    local attr = lfs.symlinkattributes(path)
-    if not attr then return true end
-    if attr.mode ~= "directory" then return os.remove(path) ~= nil end
-    for name in lfs.dir(path) do
-        if name ~= "." and name ~= ".." then
-            if not removeTree(path .. "/" .. name) then return false end
-        end
-    end
-    return lfs.rmdir(path) ~= nil
-end
-
 --- 已保存的主题名列表（排序）；顺手清掉上次导入崩溃残留的暂存目录
 ---@return string[]
 function Theme.list()
@@ -127,7 +98,7 @@ function Theme.list()
     for name in lfs.dir(root) do
         if name:sub(1, 8) == ".import-"
             and lfs.attributes(root .. "/" .. name, "mode") == "directory" then
-            removeTree(root .. "/" .. name)   -- 孤儿暂存目录，自愈
+            Fs.removeTree(root .. "/" .. name)   -- 孤儿暂存目录，自愈
         elseif name ~= "." and name ~= ".."
             and lfs.attributes(root .. "/" .. name, "mode") == "directory"
             and lfs.attributes(root .. "/" .. name .. "/theme.lua", "mode") == "file" then
@@ -201,25 +172,6 @@ local function dump(value, depth, seen, out)
     end
 end
 
---- 先写临时文件再改名覆盖：写到一半失败（磁盘满）不会把原文件截断
----@return boolean ok, string|nil err
-local function writeFile(path, data)
-    local tmp = path .. ".new"
-    local file, err = io.open(tmp, "wb")
-    if not file then return false, err or ("写不了 " .. path) end
-    local wok = file:write(data)
-    local cok = file:close()
-    if not (wok and cok) then
-        os.remove(tmp)
-        return false, "写入失败：" .. path
-    end
-    if not os.rename(tmp, path) then
-        os.remove(tmp)
-        return false, "替换失败：" .. path
-    end
-    return true
-end
-
 local function serialize(data)
     local out = {
         "-- moon-beautify 主题包（月读美化插件）\n"
@@ -247,11 +199,7 @@ end
 --- assets 里已用的文件名
 local function usedNames(assetsDir)
     local used = {}
-    if lfs.attributes(assetsDir, "mode") == "directory" then
-        for name in lfs.dir(assetsDir) do
-            if name ~= "." and name ~= ".." then used[name] = true end
-        end
-    end
+    for _i, name in ipairs(Fs.list(assetsDir)) do used[name] = true end
     return used
 end
 
@@ -275,47 +223,21 @@ end
 
 --- 目录里是否有图片（壁纸的文件夹轮换靠它判断要不要整目录收编）
 local function dirHasImage(dir)
-    if lfs.attributes(dir, "mode") ~= "directory" then return false end
-    for name in lfs.dir(dir) do
-        local p = dir .. "/" .. name
-        if name ~= "." and name ~= ".." and lfs.attributes(p, "mode") == "file" then
-            local ext = name:lower():match("%.(%w+)$")
-            if ext and IMAGE_EXT[ext] then return true end
-        end
-    end
-    return false
-end
-
-local function dirFirstImage(dir)
-    for name in lfs.dir(dir) do
-        local p = dir .. "/" .. name
-        if name ~= "." and name ~= ".." and lfs.attributes(p, "mode") == "file" then
-            local ext = name:lower():match("%.(%w+)$")
-            if ext and IMAGE_EXT[ext] then return name end
-        end
-    end
-    return nil
+    return #Pick.listImages(dir) > 0
 end
 
 --- 递归复制目录，返回复制的图片数
 local function copyAssetDir(src, dst)
-    if lfs.attributes(dst, "mode") ~= "directory" and not lfs.mkdir(dst) then return 0 end
+    if not Paths.ensureDir(dst) then return 0 end
     local n = 0
-    for name in lfs.dir(src) do
-        if name ~= "." and name ~= ".." then
-            local s, d = src .. "/" .. name, dst .. "/" .. name
-            local mode = lfs.attributes(s, "mode")
-            if mode == "directory" then
-                n = n + copyAssetDir(s, d)
-            elseif mode == "file" then
-                local f = io.open(s, "rb")
-                local data = f and f:read("*a") or nil
-                if f then f:close() end
-                if data then
-                    local o = io.open(d, "wb")
-                    if o then o:write(data) o:close() n = n + 1 end
-                end
-            end
+    for _i, name in ipairs(Fs.list(src)) do
+        local s, d = src .. "/" .. name, dst .. "/" .. name
+        local mode = lfs.attributes(s, "mode")
+        if mode == "directory" then
+            n = n + copyAssetDir(s, d)
+        elseif mode == "file" then
+            local data = Fs.read(s)
+            if data and Fs.write(d, data) then n = n + 1 end
         end
     end
     return n
@@ -346,8 +268,7 @@ local function collectAssets(conf, assetsDir)
     local err
     local seen = {}  -- 源路径 → assets 文件名/目录名
     walk(conf, function(s)
-        local ext = s:lower():match("%.(%w+)$")
-        if not ext or not IMAGE_EXT[ext] then
+        if not Image.suffix(s) then
             if not dirHasImage(s) then return s end
             if seen[s] then return ASSET_MARK .. seen[s] end
             local base = s:match("([^/\\]+)$") or "folder"
@@ -356,27 +277,17 @@ local function collectAssets(conf, assetsDir)
             if n == 0 then return s end
             seen[s] = name
             copied = copied + n
-            if not first then first = name .. "/" .. (dirFirstImage(s) or "") end
+            if not first then first = name .. "/" .. Pick.listImages(s)[1]:match("[^/]+$") end
             return ASSET_MARK .. name
         end
         if lfs.attributes(s, "mode") ~= "file" then return s end
         if seen[s] then return ASSET_MARK .. seen[s] end
-        local src, oerr = io.open(s, "rb")
-        if not src then return s end
-        local data = src:read("*a")
-        src:close()
+        local data = Fs.read(s)
         if not data or data == "" then return s end
         local base = s:match("([^/\\]+)$") or "asset.bin"
         local asset = uniqueName(used, base)
-        local dest = io.open(assetsDir .. "/" .. asset, "wb")
-        if not dest then
-            err = err or ("写不了图片 " .. asset)
-            return s
-        end
-        local wok = dest:write(data)
-        local cok = dest:close()
-        if not (wok and cok) then
-            err = err or ("写图片失败 " .. asset)
+        if not Fs.write(assetsDir .. "/" .. asset, data) then
+            err = err or _("写不了图片 %s", asset)
             return s
         end
         seen[s] = asset
@@ -401,7 +312,7 @@ end
 --- 旧包里还有一条指向 comp_all 的自引用并排，也要清掉。
 local function stripGlobalDecor(conf)
     if type(conf) ~= "table" then return end
-    for _, key in ipairs({ "widget_bg", "widget_lace" }) do
+    for _i, key in ipairs({ "widget_bg", "widget_lace" }) do
         local map = conf[key]
         if type(map) == "table" then
             map.all = nil
@@ -410,9 +321,9 @@ local function stripGlobalDecor(conf)
     end
     if type(conf.rows) == "table" then
         local rows = {}
-        for _, row in ipairs(conf.rows) do
+        for _i, row in ipairs(conf.rows) do
             local legacy = false
-            for _, id in ipairs(type(row) == "table" and row or {}) do
+            for _i, id in ipairs(type(row) == "table" and row or {}) do
                 if id == "comp_all" or id == "all" then legacy = true break end
             end
             if not legacy then rows[#rows + 1] = row end
@@ -423,7 +334,7 @@ end
 
 --- 当前配置（深拷贝、剔除本机状态键）
 local function snapshotConf()
-    local Store = require("moonbeautify.store")
+    local Store = require("moonbeautify.core.store")
     local conf = {}
     for k, v in pairs(Store.conf()) do
         if not LOCAL_KEYS[k] then conf[k] = deepcopy(v) end
@@ -456,16 +367,11 @@ end
 local function sigOf(dir)
     local sigs = {}
     local assets = dir .. "/assets"
-    if lfs.attributes(assets, "mode") ~= "directory" then return sigs end
-    for f in lfs.dir(assets) do
+    for _i, f in ipairs(Fs.list(assets)) do
         local p = assets .. "/" .. f
         if lfs.attributes(p, "mode") == "file" then
-            local fd = io.open(p, "rb")
-            if fd then
-                local d = fd:read("*a")
-                fd:close()
-                if d and d ~= "" then sigs[d] = f end
-            end
+            local d = Fs.read(p)
+            if d and d ~= "" then sigs[d] = f end
         end
     end
     return sigs
@@ -513,21 +419,14 @@ end
 ---@return string|nil
 local function dirKey(dir)
     if lfs.attributes(dir, "mode") ~= "directory" then return nil end
-    local names = {}
-    for name in lfs.dir(dir) do
-        local p = dir .. "/" .. name
-        if name ~= "." and name ~= ".." and lfs.attributes(p, "mode") == "file" then
-            local ext = name:lower():match("%.(%w+)$")
-            if ext and IMAGE_EXT[ext] then names[#names + 1] = name end
-        end
-    end
-    table.sort(names)
+    local paths = Pick.listImages(dir)
     local h = 5381
-    for _, name in ipairs(names) do
+    for _i, p in ipairs(paths) do
+        local name = p:match("[^/]+$")
         h = hAdd(h, name)
-        h = hAdd(h, imgKey(dir .. "/" .. name) or name)
+        h = hAdd(h, imgKey(p) or name)
     end
-    return #names .. "-" .. tostring(h)
+    return #paths .. "-" .. tostring(h)
 end
 
 --- 图片引用归一化：@assets/xxx 还原成 assetsDir 下的绝对路径，
@@ -539,8 +438,7 @@ local function imgRef(s, assetsDir)
     if s:sub(1, #ASSET_MARK) == ASSET_MARK then
         s = assetsDir .. "/" .. s:sub(#ASSET_MARK + 1)
     end
-    local ext = s:lower():match("%.(%w+)$")
-    if not ext or not IMAGE_EXT[ext] then
+    if not Image.suffix(s) then
         if lfs.attributes(s, "mode") == "directory" then
             return "@dir/" .. (dirKey(s) or s)
         end
@@ -591,13 +489,13 @@ function Theme.dirty(name)
     local assetsDir = dir .. "/assets"
     local expected, cur
 
-    local active = require("moonbeautify.store").conf().theme_parts or {}
+    local active = require("moonbeautify.core.store").conf().theme_parts or {}
     if type(data.parts) == "table" and #data.parts > 0 and next(active) ~= nil then
         -- 启用了部件：只比较当前启用的部件，混搭不该被当成「整包被改过」
         -- 整包应用会清空 theme_parts，此时没有启用项，退回整包比较才能发现用户改了配置
         local live = snapshotConf()
         expected, cur = {}, {}
-        for _, p in ipairs(Theme.parts(name)) do
+        for _i, p in ipairs(Theme.parts(name)) do
             -- 壁纸/锁屏在月读原生配置里，不混进 ext.beautify 的脏标记比较
             if p.type ~= "wallpaper" and p.type ~= "lockscreen" and active[p.slot] == p.id then
                 Parts.merge(expected, p.conf, p.slot)
@@ -630,7 +528,7 @@ end
 ---@param fromDir string
 ---@return boolean 是否转移成功
 local function redirectRefs(fromDir)
-    local Store = require("moonbeautify.store")
+    local Store = require("moonbeautify.core.store")
     local prefix = fromDir .. "/"
     local myName = fromDir:match("([^/]+)$")
     local conf = Store.conf()
@@ -653,9 +551,7 @@ local function redirectRefs(fromDir)
                     -- 每张被引用的图都能在另一套的 assets 里找到同内容文件才转
                     local repl, okAll = {}, true
                     for p in pairs(refs) do
-                        local fd = io.open(p, "rb")
-                        local d = fd and fd:read("*a") or nil
-                        if fd then fd:close() end
+                        local d = Fs.read(p)
                         local f = d and osigs[d] or nil
                         if f then
                             repl[p] = odir .. "/assets/" .. f
@@ -692,8 +588,7 @@ local function wallpaperHasAsset(conf)
         if is_image_key and type(value) == "string" and value ~= "" then
             local mode = lfs.attributes(value, "mode")
             if mode == "file" then
-                local ext = value:lower():match("%.(%w+)$")
-                if ext and IMAGE_EXT[ext] then return true end
+                if Image.suffix(value) then return true end
             elseif mode == "directory" and dirHasImage(value) then
                 return true
             end
@@ -707,16 +602,16 @@ end
 ---@return boolean ok, string|nil err
 function Theme.save(name)
     local safe = Theme.sanitize(name)
-    if not safe then return false, "名字不能为空" end
+    if not safe then return false, _("名字不能为空") end
     local dir = Theme.root() .. "/" .. safe
-    if not mkdirp(dir) then
-        return false, "建不了主题目录"
+    if not Paths.ensureDir(dir) then
+        return false, _("建不了主题目录")
     end
     -- 配置里的图片可能正指向本主题旧的 assets，所以先收编到临时目录，全部成功后再替换
     local newAssets = dir .. "/.assets-new"
     local newTheme = dir .. "/.theme-new.lua"
-    removeTree(newAssets)
-    if not lfs.mkdir(newAssets) then return false, "建不了 assets 目录" end
+    Fs.removeTree(newAssets)
+    if not lfs.mkdir(newAssets) then return false, _("建不了 assets 目录") end
     local conf = snapshotConf()
     local copied, first, cerr = collectAssets(conf, newAssets)
     -- 存档里保留 @assets/ 相对引用：应用/读取部件时才换成当前主题目录的绝对路径，
@@ -753,11 +648,11 @@ function Theme.save(name)
         if not first then first = lsFirst end
     end
     if cerr then
-        removeTree(newAssets)
+        Fs.removeTree(newAssets)
         return false, cerr
     end
-    for _, part in ipairs(parts) do part.conf = deepcopy(part.conf) end
-    local wok, werr = writeFile(newTheme, serialize({
+    for _i, part in ipairs(parts) do part.conf = deepcopy(part.conf) end
+    local wok = Fs.write(newTheme, serialize({
         kind = THEME_KIND,          -- 格式标识：导入时先认身份
         version = THEME_FORMAT,     -- 格式版本：将来 conf 键结构升级时做迁移判断
         name = safe,
@@ -766,12 +661,12 @@ function Theme.save(name)
         cover = first and (ASSET_MARK .. first) or nil,   -- 列表缩略图
     }))
     if not wok then
-        removeTree(newAssets)
-        return false, werr
+        Fs.removeTree(newAssets)
+        return false, _("写不了 %s", newTheme)
     end
-    removeTree(dir .. "/assets")
+    Fs.removeTree(dir .. "/assets")
     if not os.rename(newAssets, dir .. "/assets") or not os.rename(newTheme, dir .. "/theme.lua") then
-        return false, "替换主题文件失败"
+        return false, _("替换主题文件失败")
     end
     note("moonbeautify theme saved", safe, copied .. " assets")
     return true, dir
@@ -783,19 +678,19 @@ end
 function Theme.apply(name)
     local dir = Theme.dir(name)
     if not dir or lfs.attributes(dir .. "/theme.lua", "mode") ~= "file" then
-        return false, "主题不存在"
+        return false, _("主题不存在")
     end
     local chunk, err = loadfile(dir .. "/theme.lua")
-    if not chunk then return false, "theme.lua 损坏：" .. tostring(err) end
+    if not chunk then return false, _("theme.lua 损坏：%s", tostring(err)) end
     local ok, data = pcall(chunk)
     if not ok or type(data) ~= "table" or type(data.conf) ~= "table" then
-        return false, "主题文件内容不对"
+        return false, _("主题文件内容不对")
     end
     stripGlobalDecor(data.conf)
     remapAssets(data.conf, dir .. "/assets")
     -- 原生配置部件：整包应用时一起复刻保存时的壁纸/锁屏配置
     local appliedWallpaperId, appliedLockscreenId
-    for _, part in ipairs(type(data.parts) == "table" and data.parts or {}) do
+    for _i, part in ipairs(type(data.parts) == "table" and data.parts or {}) do
         if type(part.conf) ~= "table" then
             -- 跳过
         elseif part.type == "wallpaper" then
@@ -810,7 +705,7 @@ function Theme.apply(name)
             appliedLockscreenId = part.id or Parts.partId(Theme.sanitize(name) or name, part.slot or "lockscreen")
         end
     end
-    local Store = require("moonbeautify.store")
+    local Store = require("moonbeautify.core.store")
     local conf = Store.conf()
     local hasBeauty = false
     for k in pairs(data.conf) do
@@ -861,7 +756,7 @@ function Theme.parts(name)
     local raw = (type(data.parts) == "table" and #data.parts > 0)
         and data.parts or Parts.splitConf(data.conf or {})
     local out = {}
-    for _, p in ipairs(raw) do
+    for _i, p in ipairs(raw) do
         local q = deepcopy(p)
         q.conf = type(q.conf) == "table" and q.conf or {}
         stripGlobalDecor(q.conf)
@@ -885,16 +780,16 @@ end
 ---@return boolean ok, string|nil err
 function Theme.updatePartConf(name, slot, partConf)
     local data, dir = loadThemeData(name)
-    if not data or not dir then return false, "主题不存在" end
-    if type(partConf) ~= "table" then return false, "配置不对" end
+    if not data or not dir then return false, _("主题不存在") end
+    if type(partConf) ~= "table" then return false, _("配置不对") end
     local safe = Theme.sanitize(name) or name
     local raw = (type(data.parts) == "table" and #data.parts > 0)
         and data.parts or Parts.splitConf(data.conf or {})
     local found
-    for _, p in ipairs(raw) do
+    for _i, p in ipairs(raw) do
         if p.slot == slot then found = p break end
     end
-    if not found then return false, "部件不存在" end
+    if not found then return false, _("部件不存在") end
     local ptype = found.type
     found.conf = deepcopy(partConf)
     if ptype ~= "wallpaper" and ptype ~= "lockscreen" then
@@ -905,8 +800,7 @@ function Theme.updatePartConf(name, slot, partConf)
     data.version = THEME_FORMAT
     data.name = safe
     data.parts = raw
-    local wok, werr = writeFile(dir .. "/theme.lua", serialize(data))
-    if not wok then return false, werr end
+    if not Fs.write(dir .. "/theme.lua", serialize(data)) then return false, _("写不了 %s", dir .. "/theme.lua") end
     note("moonbeautify theme part retargeted", safe .. "/" .. slot)
     return true
 end
@@ -914,8 +808,8 @@ end
 --- 所有主题的所有部件（部件库数据源）
 function Theme.allParts()
     local out = {}
-    for _, name in ipairs(Theme.list()) do
-        for _, p in ipairs(Theme.parts(name)) do out[#out + 1] = p end
+    for _i, name in ipairs(Theme.list()) do
+        for _i, p in ipairs(Theme.parts(name)) do out[#out + 1] = p end
     end
     return out
 end
@@ -927,11 +821,11 @@ end
 ---@return boolean ok, string|nil err
 function Theme.applyPart(name, slot, enable)
     local part
-    for _, p in ipairs(Theme.parts(name)) do
+    for _i, p in ipairs(Theme.parts(name)) do
         if p.slot == slot then part = p break end
     end
-    if not part then return false, "部件不存在" end
-    local Store = require("moonbeautify.store")
+    if not part then return false, _("部件不存在") end
+    local Store = require("moonbeautify.core.store")
     local conf = Store.conf()
     conf.part_backups = type(conf.part_backups) == "table" and conf.part_backups or {}
     conf.theme_parts = type(conf.theme_parts) == "table" and conf.theme_parts or {}
@@ -1004,7 +898,7 @@ end
 ---@return boolean ok, string|nil err
 function Theme.deletePart(name, slot)
     local data, dir = loadThemeData(name)
-    if not data or not dir then return false, "主题不存在" end
+    if not data or not dir then return false, _("主题不存在") end
     local safe = Theme.sanitize(name) or name
     local raw = (type(data.parts) == "table" and #data.parts > 0)
         and deepcopy(data.parts) or Parts.splitConf(data.conf or {})
@@ -1012,13 +906,13 @@ function Theme.deletePart(name, slot)
     for i, p in ipairs(raw) do
         if p.slot == slot then removed = p table.remove(raw, i) break end
     end
-    if not removed then return false, "部件不存在" end
+    if not removed then return false, _("部件不存在") end
 
     -- 删组件部件时，把其它部件里引用了它的并排组合一起清掉；
     -- 清完变空的组件部件（比如只剩一条组合）也一并移除。
     if removed.type == "component" then
         local kept = {}
-        for _, p in ipairs(raw) do
+        for _i, p in ipairs(raw) do
             if type(p.conf) == "table" then
                 Parts.stripComponent(p.conf, slot)
                 if p.type == "component" and next(p.conf) == nil then
@@ -1038,7 +932,7 @@ function Theme.deletePart(name, slot)
     stripGlobalDecor(conf)
 
     -- 整包应用后 theme_parts 会被清空；这里同时按配置内容判断这个部件是否正在生效
-    local Store = require("moonbeautify.store")
+    local Store = require("moonbeautify.core.store")
     local live = Store.conf()
     local pid = Parts.partId(safe, slot)
     local remapped = deepcopy(removed.conf or {})
@@ -1152,8 +1046,7 @@ function Theme.deletePart(name, slot)
     data.name = safe
     data.conf = conf
     data.parts = raw
-    local wok, werr = writeFile(dir .. "/theme.lua", serialize(data))
-    if not wok then return false, werr end
+    if not Fs.write(dir .. "/theme.lua", serialize(data)) then return false, _("写不了 %s", dir .. "/theme.lua") end
     note("moonbeautify theme part deleted", pid)
     return true
 end
@@ -1163,13 +1056,13 @@ end
 ---@return boolean ok, string|nil err
 function Theme.delete(name)
     local dir = Theme.dir(name)
-    if not dir then return false, "名字不合法" end
-    if lfs.attributes(dir, "mode") ~= "directory" then return false, "主题不存在" end
+    if not dir then return false, _("名字不合法") end
+    if lfs.attributes(dir, "mode") ~= "directory" then return false, _("主题不存在") end
     -- 当前配置若还引用着该主题「真实存在」的图片，删掉会产生悬空路径：优先转给内容相同的
     -- 另一套主题，转移不成才拒绝。路径还在但图片已经没了（空主题/图被清过）不算占用，
     -- 顺手把这些失效路径清掉，否则最后一个主题会因假引用永远删不掉。
     local prefix = dir .. "/"
-    local Store = require("moonbeautify.store")
+    local Store = require("moonbeautify.core.store")
     local live = Store.conf()
     local used, dangling = false, {}
     walk(live, function(s)
@@ -1191,7 +1084,7 @@ function Theme.delete(name)
     local MoonSettings = require("utils.settings")
     local nativeHits, nativeDangling = {}, {}
     do
-        for _, spec in ipairs({ { "features.wallpaper", "界面壁纸" }, { "features.lockscreen", "锁屏壁纸" } }) do
+        for _i, spec in ipairs({ { "features.wallpaper", _("界面壁纸") }, { "features.lockscreen", _("锁屏壁纸") } }) do
             local ok, conf = pcall(function() return MoonSettings.get(spec[1]) end)
             if ok and type(conf) == "table" then
                 for key, v in pairs(conf) do
@@ -1208,17 +1101,17 @@ function Theme.delete(name)
         end
     end
     if #nativeHits > 0 then
-        local tip = table.concat(nativeHits, "、") .. "正在使用本主题下的图片"
-        if table.concat(nativeHits, ""):find("界面壁纸", 1, true) then
-            tip = tip .. "；可先在壁纸部件菜单里「复制到其他文件夹」"
+        local tip = _("%s正在使用本主题下的图片", table.concat(nativeHits, _("、")))
+        if nativeHits[1] == _("界面壁纸") then
+            tip = tip .. _("；可先在壁纸部件菜单里「复制到其他文件夹」")
         end
         return false, tip
     end
-    for _, hit in ipairs(nativeDangling) do
+    for _i, hit in ipairs(nativeDangling) do
         hit[1][hit[2]] = nil
         pcall(function() MoonSettings.save(hit[3], hit[1]) end)
     end
-    if not removeTree(dir) then return false, "删不掉主题目录" end
+    if not Fs.removeTree(dir) then return false, _("删不掉主题目录") end
     -- 悬空标记一并清掉：active_theme、该主题的部件启用记录与备份
     local safe = Theme.sanitize(name)
     local changed = next(dangling) ~= nil or #nativeDangling > 0
@@ -1253,41 +1146,26 @@ end
 function Theme.export(name, destDir)
     local dir = Theme.dir(name)
     if not dir or lfs.attributes(dir .. "/theme.lua", "mode") ~= "file" then
-        return false, "主题不存在"
+        return false, _("主题不存在")
     end
-    local safe = Theme.sanitize(name)
-    local src = io.open(dir .. "/theme.lua", "rb")
-    if not src then return false, "读不了 theme.lua" end
-    local themeData = src:read("*a")
-    src:close()
-    local files = { { name = "theme.lua", data = themeData } }
+    local path = destDir .. "/" .. Theme.sanitize(name) .. ".zip"
+    local writer = require("ffi/archiver").Writer:new()
+    if not writer:open(path, "zip") then return false, writer.err or _("写入 zip 失败") end
+    writer:setZipCompression("store")
+    -- addPath 正常读完时返回假（内部状态是 EOF），只有 err 非空才是真失败
+    local ok = writer:addPath("theme.lua", dir .. "/theme.lua", false) or not writer.err
     local assetsDir = dir .. "/assets"
-    local function addDir(d, prefix)
-        for name in lfs.dir(d) do
-            if name ~= "." and name ~= ".." then
-                local p = d .. "/" .. name
-                local mode = lfs.attributes(p, "mode")
-                if mode == "directory" then
-                    addDir(p, prefix .. name .. "/")
-                elseif mode == "file" then
-                    local f = io.open(p, "rb")
-                    if f then
-                        files[#files + 1] = { name = prefix .. name, data = f:read("*a") }
-                        f:close()
-                    end
-                end
-            end
-        end
+    if ok and lfs.attributes(assetsDir, "mode") == "directory" then
+        ok = writer:addPath("assets", assetsDir, true) or not writer.err
     end
-    if lfs.attributes(assetsDir, "mode") == "directory" then addDir(assetsDir, "assets/") end
-    local Zip = require("moonbeautify.zip")
-    local path = destDir .. "/" .. safe .. ".zip"
-    local ok, err = Zip.write(path, files)
+    local err = writer.err
+    writer:close()
     if not ok then
+        os.remove(path)
         note("moonbeautify theme export failed", path, err)
-        return false, err
+        return false, err or _("写入 zip 失败")
     end
-    note("moonbeautify theme exported", path, #files - 1 .. " assets")
+    note("moonbeautify theme exported", path)
     return true, path
 end
 
@@ -1297,19 +1175,19 @@ end
 function Theme.importZip(zipPath)
     if type(zipPath) ~= "string" or zipPath == ""
         or lfs.attributes(zipPath, "mode") ~= "file" then
-        return false, "zip 文件不存在"
+        return false, _("zip 文件不存在")
     end
     local root = Theme.root()
-    if not mkdirp(root) then
-        return false, "建不了主题目录"
+    if not Paths.ensureDir(root) then
+        return false, _("建不了主题目录")
     end
     local staging = root .. "/.import-" .. tostring(os.time())
-    removeTree(staging)
-    if not lfs.mkdir(staging) then return false, "建不了暂存目录" end
+    Fs.removeTree(staging)
+    if not lfs.mkdir(staging) then return false, _("建不了暂存目录") end
     local reader = require("ffi/archiver").Reader:new()
     if not reader:open(zipPath) then
-        removeTree(staging)
-        return false, reader.err or "打不开 zip"
+        Fs.removeTree(staging)
+        return false, reader.err or _("打不开 zip")
     end
     for entry in reader:iterate() do
         -- 只解相对路径，防 zip 路径穿越
@@ -1320,8 +1198,8 @@ function Theme.importZip(zipPath)
     local rerr = reader.err
     reader:close()
     if rerr then
-        removeTree(staging)
-        return false, "解压失败：" .. tostring(rerr)
+        Fs.removeTree(staging)
+        return false, _("解压失败：%s", tostring(rerr))
     end
     -- theme.lua 在包根或一级子目录
     local base
@@ -1336,8 +1214,8 @@ function Theme.importZip(zipPath)
         end
     end
     if not base then
-        removeTree(staging)
-        return false, "zip 里没有 theme.lua"
+        Fs.removeTree(staging)
+        return false, _("zip 里没有 theme.lua")
     end
     local chunk = loadfile(base .. "/theme.lua")
     -- 不能写 `chunk and pcall(chunk) or false`：and/or 会把 pcall 的多值截成单值，
@@ -1346,8 +1224,8 @@ function Theme.importZip(zipPath)
     if chunk then ok, data = pcall(chunk) end
     -- 身份校验：声明了 kind 但不是月读美化主题的包，明确拒绝（旧包没写 kind，照收，向后兼容）
     if ok and type(data) == "table" and data.kind ~= nil and data.kind ~= THEME_KIND then
-        removeTree(staging)
-        return false, "这不是月读美化的主题包"
+        Fs.removeTree(staging)
+        return false, _("这不是月读美化的主题包")
     end
     local cname = (ok and type(data) == "table") and data.name or nil
     local zipName = zipPath:match("([^/\\]+)$")
@@ -1358,16 +1236,16 @@ function Theme.importZip(zipPath)
     local backup = staging .. "-old"
     local hadOld = lfs.attributes(dest, "mode") ~= nil
     if hadOld and not os.rename(dest, backup) then
-        removeTree(staging)
-        return false, "挪不开旧主题"
+        Fs.removeTree(staging)
+        return false, _("挪不开旧主题")
     end
     if not os.rename(base, dest) then
         if hadOld then os.rename(backup, dest) end
-        removeTree(staging)
-        return false, "挪不进主题目录"
+        Fs.removeTree(staging)
+        return false, _("挪不进主题目录")
     end
-    if hadOld then removeTree(backup) end
-    removeTree(staging)
+    if hadOld then Fs.removeTree(backup) end
+    Fs.removeTree(staging)
     note("moonbeautify theme imported", name, zipPath)
     return true, name
 end

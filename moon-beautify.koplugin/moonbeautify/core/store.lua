@@ -25,7 +25,7 @@
                        focus = { x, y, w, h } 取景选区, key_alpha = 0-100 按键透明度 }
   last_dir     string  上一次选图用过的目录；没单独配路径的选图器都从这里打开（与界面壁纸共用）
 
-@module moonbeautify.store
+@module moonbeautify.core.store
 --]]
 
 local Settings = require("utils.settings")

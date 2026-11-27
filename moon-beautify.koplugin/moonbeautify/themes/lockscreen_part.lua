@@ -37,7 +37,7 @@ else
     for _, key in ipairs(FALLBACK_KEYS) do addKey(key) end
 end
 
-local copy = require("moonbeautify.parts").copy
+local copy = require("moonbeautify.themes.parts").copy
 
 local function conf()
     local ok, c = pcall(MoonSettings.get, ID)

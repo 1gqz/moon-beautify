@@ -12,7 +12,7 @@ build / paginate，按扩展配置 rows 分组：
 - 没配 rows，或配了但成员不在同一页：完全退回月读原生逻辑（不接管）。
 - 布局被我们接管时，paginate 也按组合算高度，避免整页重排把一对拆到两页。
 
-@module moonbeautify.rows
+@module moonbeautify.widgets.rows
 --]]
 
 local HorizontalGroup = require("ui/widget/horizontalgroup")
@@ -23,7 +23,7 @@ local Registry = require("desktop.pages.home.registry")
 local Widgets = require("desktop.pages.home.placements")
 local Layout = require("desktop.pages.home.layout")
 local Box = require("ui/themes/widgets/box")
-local Store = require("moonbeautify.store")
+local Store = require("moonbeautify.core.store")
 
 local Rows = {}
 

@@ -1,5 +1,5 @@
 local T = require("helper")
-local PartCopy = require("moonbeautify.part_copy")
+local PartCopy = require("moonbeautify.themes.part_copy")
 
 T.test("part_copy: 复制到可写目录改写路径", function()
     local src = T.tmpdir() .. "/a.png"

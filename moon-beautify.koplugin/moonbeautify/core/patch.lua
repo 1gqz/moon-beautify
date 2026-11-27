@@ -10,7 +10,7 @@
 
 全部包在 pcall 里，月读升级导致字段变化时最多失效，不影响启动。
 
-@module moonbeautify.patch
+@module moonbeautify.core.patch
 --]]
 
 local Theme = require("ui/themes")
@@ -26,7 +26,7 @@ local Image = require("ui/themes/widgets/image")
 local Text = require("ui.themes.widgets.text")
 local ImageUtil = require("utils.image")
 
-local Store = require("moonbeautify.store")
+local Store = require("moonbeautify.core.store")
 
 local Patch = {}
 local installed = false
@@ -190,7 +190,7 @@ local function decorate(self, widget)
         local laceConf = conf.widget_lace
         if type(laceConf) == "table" then lace = laceConf[self.id] end
         if type(lace) == "table" then
-            laceFocus = require("moonbeautify.view").focusOf(lace.focus)
+            laceFocus = require("moonbeautify.widgets.view").focusOf(lace.focus)
             lace = lace.src
         end
         if type(lace) ~= "string" or lace == "" then
@@ -201,7 +201,7 @@ local function decorate(self, widget)
         local item = type(conf.widget_bg) == "table" and conf.widget_bg[self.id] or nil
         local hasBg = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
         local bgAnchor = hasBg and { x = tonumber(item.ax) or 0.5, y = tonumber(item.ay) or 0.5 } or nil
-        local bgFocus = hasBg and require("moonbeautify.view").focusOf(item.focus) or nil
+        local bgFocus = hasBg and require("moonbeautify.widgets.view").focusOf(item.focus) or nil
         local pad = padOf(conf, self.id)
         if not hasBg and not lace and pad <= 0 then return nil end
         -- 有内边距时组件是按缩小尺寸建的（_beautify_full 记着整槽尺寸），居中放回去
@@ -214,7 +214,7 @@ local function decorate(self, widget)
         if dims and pad > 0 then
             inner = CenterContainer:new{ dimen = Geom:new{ w = w, h = h }, widget }
         end
-        return require("moonbeautify.view").background(w, h,
+        return require("moonbeautify.widgets.view").background(w, h,
             hasBg and item.src or nil, hasBg and (tonumber(item.veil) or 0) or 0, inner, lace,
             hasBg and item.fit or nil, bgAnchor, bgFocus, laceFocus)
     end)
@@ -268,7 +268,7 @@ end
 
 --- 补丁 4：首页「同一行并排」——接管 layout.build / paginate（仅配置了组合时生效）
 local function patchRows()
-    require("moonbeautify.rows").install()
+    require("moonbeautify.widgets.rows").install()
 end
 
 --- 补丁 5：选图器的「上次目录」记忆。
@@ -366,7 +366,7 @@ local function patchKeyboard()
                     local w, h = widget.dimen.w, widget.dimen.h
                     if has_src and w and h and w > 0 and h > 0 then
                         pcall(function()
-                            require("moonbeautify.bg").layer(item.src, w, h, nil, nil, item.focus):paintTo(bb, x, y)
+                            require("moonbeautify.render.bg").layer(item.src, w, h, nil, nil, item.focus):paintTo(bb, x, y)
                             local veil = tonumber(item.veil) or 0
                             if veil > 0 then bb:lightenRect(x, y, w, h, veil / 100) end
                         end)

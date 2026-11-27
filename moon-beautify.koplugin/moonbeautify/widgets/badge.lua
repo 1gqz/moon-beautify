@@ -4,7 +4,7 @@
 分层：
   底图 base  —— 旋转/裁切好的照片 + 金属倒角 + 侧影 + 用户叠加素材
                 + 光环（双线环）
-  特效层     —— 每帧只画几十个像素（细闪/雨滴/星星，见 moonbeautify.effects）
+  特效层     —— 每帧只画几十个像素（细闪/雨滴/星星，见 moonbeautify.render.effects）
 
 形状统一用「圆角矩形的有符号距离」算：
   circle → 圆角半径 = 边长/2（退化成圆）
@@ -16,17 +16,18 @@ base 只在「角度变了 / 尺寸变了 / 素材变了」时重算；每帧的
 「一次 blitFrom + 几百次 setPixel」，所以转动可以做得很细（每帧几度），
 不是原来的 90° 跳一下。
 
-@module moonbeautify.badge
+@module moonbeautify.widgets.badge
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
+local _ = require("moonbeautify.l10n")
 local RenderImage = require("ui/renderimage")
 local UIManager = require("ui/uimanager")
 local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 
-local Effects = require("moonbeautify.effects")
-local nativeSize = require("moonbeautify.bg").nativeSize
+local Effects = require("moonbeautify.render.effects")
+local nativeSize = require("moonbeautify.render.bg").nativeSize
 
 local C8 = Blitbuffer.Color8
 
@@ -36,7 +37,7 @@ local Badge = {}
 Badge.TICK = 0.8
 
 -- 光环样式 → 显示名（设置界面用），只保留双线
-Badge.RING_LABEL = { double = "双线" }
+Badge.RING_LABEL = { double = _("双线") }
 
 --- 形状 → 圆角半径
 ---@param shape string "circle" | "round" | "square"

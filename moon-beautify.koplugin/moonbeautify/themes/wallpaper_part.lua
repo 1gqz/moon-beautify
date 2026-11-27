@@ -25,7 +25,7 @@ end
 local KEY_SET = {}
 for _, key in ipairs(KEYS) do KEY_SET[key] = true end
 
-local copy = require("moonbeautify.parts").copy
+local copy = require("moonbeautify.themes.parts").copy
 
 local function conf()
     return MoonSettings.get(ID)

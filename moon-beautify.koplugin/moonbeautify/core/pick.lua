@@ -1,10 +1,11 @@
 --[[--
 图片文件枚举与挑选。
 
-@module moonbeautify.pick
+@module moonbeautify.core.pick
 --]]
 
 local lfs = require("libs/libkoreader-lfs")
+local Fs = require("utils.fs")
 local Image = require("utils.image")
 
 local Pick = {}
@@ -18,16 +19,12 @@ math.randomseed(os.time())
 function Pick.listImages(dir)
     local out = {}
     if type(dir) ~= "string" or dir == "" then return out end
-    if lfs.attributes(dir, "mode") ~= "directory" then return out end
-    for name in lfs.dir(dir) do
-        if name:sub(1, 1) ~= "." then
-            local p = dir .. "/" .. name
-            if lfs.attributes(p, "mode") == "file" and Image.suffix(name) then
-                out[#out + 1] = p
-            end
+    for _i, name in ipairs(Fs.list(dir)) do
+        local p = dir .. "/" .. name
+        if name:sub(1, 1) ~= "." and Image.suffix(name) and lfs.attributes(p, "mode") == "file" then
+            out[#out + 1] = p
         end
     end
-    table.sort(out)
     return out
 end
 

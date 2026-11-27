@@ -5,7 +5,7 @@
 - 显示方式与组件背景一致：统一按取景选区铺满；没有选区就按整图铺满。
 - 渲染结果按（路径 + 选区 + 尺寸）缓存，同一素材反复画不重新解码。
 
-@module moonbeautify.deco
+@module moonbeautify.render.deco
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -13,7 +13,7 @@ local RenderImage = require("ui/renderimage")
 local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 
-local nativeSize = require("moonbeautify.bg").nativeSize
+local nativeSize = require("moonbeautify.render.bg").nativeSize
 
 local Deco = {}
 

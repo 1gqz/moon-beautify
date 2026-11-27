@@ -1,5 +1,5 @@
 local T = require("helper")
-local Theme = require("moonbeautify.theme")
+local Theme = require("moonbeautify.themes.theme")
 
 local function badgeOf(name)
     for _, p in ipairs(Theme.parts(name)) do
@@ -29,6 +29,24 @@ T.test("theme: 覆盖保存引用自身 assets 的主题不丢图", function()
     T.ok(T.read(root .. "/A/theme.lua"):find('"@assets/cat.png"', 1, true), "存档应使用 @assets 引用")
     T.eq(T.read(root .. "/A/.theme-new.lua"), nil)
     T.eq(badgeOf("A"), root .. "/A/assets/cat.png")
+end)
+
+T.test("theme: 选图器能选的 svg 和图片文件夹都收进主题", function()
+    local root = T.tmpdir()
+    Theme.setRoot(root)
+    local src = T.tmpdir()
+    T.write(src .. "/icon.svg", "<svg/>")
+    T.sh("mkdir -p '" .. src .. "/frames'")
+    T.write(src .. "/frames/2.jpg", "J2")
+    T.write(src .. "/frames/1.jpg", "J1")
+    T.conf.badge_src = src .. "/icon.svg"
+    T.conf.frame_dir = src .. "/frames"
+    T.ok(Theme.save("S"))
+    T.eq(T.read(root .. "/S/assets/icon.svg"), "<svg/>")
+    T.eq(T.read(root .. "/S/assets/frames/1.jpg"), "J1")
+    local saved = T.read(root .. "/S/theme.lua")
+    T.ok(saved:find('"@assets/icon.svg"', 1, true), "svg 应改成 @assets 引用")
+    T.ok(saved:find('"@assets/frames"', 1, true), "文件夹应改成 @assets 引用")
 end)
 
 T.test("theme: 目录不可写时保存失败且旧存档完好", function()

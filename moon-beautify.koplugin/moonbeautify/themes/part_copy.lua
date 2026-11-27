@@ -2,12 +2,14 @@
 --- 复制后改写部件配置并落回当前设置/主题存档，这样 KOReader 文件管理器能直接看到图片，
 --- 删掉主题包也不会让图片失效。
 local lfs = require("libs/libkoreader-lfs")
-local Parts = require("moonbeautify.parts")
-local Store = require("moonbeautify.store")
+local Fs = require("utils.fs")
+local Image = require("utils.image")
+local Paths = require("utils.paths")
+local Parts = require("moonbeautify.themes.parts")
+local Pick = require("moonbeautify.core.pick")
+local Store = require("moonbeautify.core.store")
 
 local M = {}
-
-local IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true, bmp = true }
 
 local copy = Parts.copy
 
@@ -23,23 +25,6 @@ local function walk(value, fn)
     return value
 end
 
-local function isImageFile(path)
-    local ext = path:lower():match("%.(%w+)$")
-    return ext ~= nil and IMAGE_EXT[ext] == true
-end
-
-local function dirHasImage(dir)
-    if lfs.attributes(dir, "mode") ~= "directory" then return false end
-    for name in lfs.dir(dir) do
-        if name ~= "." and name ~= ".." then
-            local path = dir .. "/" .. name
-            local attr = lfs.attributes(path)
-            if attr and attr.mode == "file" and isImageFile(name) then return true end
-        end
-    end
-    return false
-end
-
 --- 枚举部件配置里指向图片文件或图片文件夹的字符串（去重）
 function M.images(conf)
     local out, seen = {}, {}
@@ -47,10 +32,10 @@ function M.images(conf)
         if type(s) ~= "string" or s == "" or seen[s] then return s end
         local attr = lfs.attributes(s)
         if not attr then return s end
-        if attr.mode == "file" and isImageFile(s) then
+        if attr.mode == "file" and Image.suffix(s) then
             seen[s] = true
             out[#out + 1] = { path = s, dir = false }
-        elseif attr.mode == "directory" and dirHasImage(s) then
+        elseif attr.mode == "directory" and #Pick.listImages(s) > 0 then
             seen[s] = true
             out[#out + 1] = { path = s, dir = true }
         end
@@ -60,25 +45,15 @@ function M.images(conf)
 end
 
 local function sameFile(a, b)
-    local fa, fb = io.open(a, "rb"), io.open(b, "rb")
-    if not fa or not fb then
-        if fa then fa:close() end
-        if fb then fb:close() end
-        return false
-    end
-    local da, db = fa:read("*a"), fb:read("*a")
-    fa:close()
-    fb:close()
-    return da == db
+    local da = Fs.read(a)
+    return da ~= nil and da == Fs.read(b)
 end
 
 local function sameDir(a, b)
     local function files(dir)
-        local out = {}
         if lfs.attributes(dir, "mode") ~= "directory" then return nil end
-        for name in lfs.dir(dir) do
-            if name ~= "." and name ~= ".." then out[name] = dir .. "/" .. name end
-        end
+        local out = {}
+        for _i, name in ipairs(Fs.list(dir)) do out[name] = dir .. "/" .. name end
         return out
     end
     local fa, fb = files(a), files(b)
@@ -94,37 +69,25 @@ end
 
 local function usedNames(dir)
     local used = {}
-    if lfs.attributes(dir, "mode") == "directory" then
-        for name in lfs.dir(dir) do used[name] = true end
-    end
+    for _i, name in ipairs(Fs.list(dir)) do used[name] = true end
     return used
 end
 
 local function copyFile(src, dst)
-    local f = io.open(src, "rb")
-    if not f then return false end
-    local data = f:read("*a")
-    f:close()
-    if not data then return false end
-    local o = io.open(dst, "wb")
-    if not o then return false end
-    local wok = o:write(data)
-    local cok = o:close()
-    return (wok and cok) and true or false
+    local data = Fs.read(src)
+    return data ~= nil and Fs.write(dst, data) == true
 end
 
 local function copyDir(src, dst)
-    if lfs.attributes(dst, "mode") ~= "directory" and not lfs.mkdir(dst) then return false end
+    if not Paths.ensureDir(dst) then return false end
     local ok = true
-    for name in lfs.dir(src) do
-        if name ~= "." and name ~= ".." then
-            local s, d = src .. "/" .. name, dst .. "/" .. name
-            local mode = lfs.attributes(s, "mode")
-            if mode == "directory" then
-                ok = copyDir(s, d) and ok
-            elseif mode == "file" then
-                ok = copyFile(s, d) and ok
-            end
+    for _i, name in ipairs(Fs.list(src)) do
+        local s, d = src .. "/" .. name, dst .. "/" .. name
+        local mode = lfs.attributes(s, "mode")
+        if mode == "directory" then
+            ok = copyDir(s, d) and ok
+        elseif mode == "file" then
+            ok = copyFile(s, d) and ok
         end
     end
     return ok
@@ -161,7 +124,7 @@ end
 ---@return table newConf, string[] files, integer failed
 function M.copyTo(conf, targetDir)
     local newConf = copy(conf) or {}
-    if lfs.attributes(targetDir, "mode") ~= "directory" then lfs.mkdir(targetDir) end
+    Paths.ensureDir(targetDir)
     local used, repl, files, failed = usedNames(targetDir), {}, {}, 0
     for _, item in ipairs(M.images(newConf)) do
         local base = item.path:match("([^/\\]+)$") or "image"
@@ -187,10 +150,10 @@ end
 --- 把改写后的配置落到当前设置（原生部件走各自数据层，其余合并回 ext.beautify）
 function M.apply(part, newConf)
     if part.type == "wallpaper" then
-        return require("moonbeautify.wallpaper_part").apply(newConf)
+        return require("moonbeautify.themes.wallpaper_part").apply(newConf)
     end
     if part.type == "lockscreen" then
-        return require("moonbeautify.lockscreen_part").apply(newConf)
+        return require("moonbeautify.themes.lockscreen_part").apply(newConf)
     end
     local conf = Store.conf()
     Parts.merge(conf, newConf, part.slot)

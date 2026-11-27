@@ -1,8 +1,13 @@
---- 测试环境：把 KOReader/月读的依赖换成桌面可跑的替身。
+--- 测试环境：把 KOReader 的依赖换成桌面可跑的替身，月读的纯 Lua 工具（utils.fs 等）直接用源码。
 --- lfs 用 shell 命令实现，只覆盖插件实际用到的接口。
 local here = debug.getinfo(1, "S").source:match("^@(.*)/[^/]+$") or "."
 local repo = here .. "/.."
-package.path = repo .. "/moon-beautify.koplugin/?.lua;" .. package.path
+local moon = os.getenv("MOON_SRC")
+if not moon then
+    io.stderr:write("需要月读源码：MOON_SRC=/path/to/book.koplugin luajit tests/run.lua\n")
+    os.exit(2)
+end
+package.path = repo .. "/moon-beautify.koplugin/?.lua;" .. moon .. "/?.lua;" .. package.path
 
 local function q(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
 local function sh(cmd)
@@ -24,6 +29,7 @@ function lfs.attributes(p, what)
 end
 lfs.symlinkattributes = lfs.attributes
 function lfs.dir(p)
+    if lfs.attributes(p, "mode") ~= "directory" then error("cannot open " .. p) end
     local names = { ".", ".." }
     for n in sh("ls -A " .. q(p)):gmatch("[^\n]+") do names[#names + 1] = n end
     local i = 0
@@ -32,7 +38,7 @@ end
 function lfs.mkdir(p) return run("mkdir " .. q(p) .. " 2>/dev/null") or nil end
 function lfs.rmdir(p) return run("rmdir " .. q(p) .. " 2>/dev/null") or nil end
 
-local T = { conf = {}, sh = run }
+local T = { conf = {}, sh = run, repo = repo }
 
 package.preload["libs/libkoreader-lfs"] = function() return lfs end
 package.preload["utils.log"] = function() return { warn = function() end } end
@@ -42,6 +48,8 @@ package.preload["utils.settings"] = function()
         get = function() return {} end, save = function() end,
     }
 end
+package.preload["datastorage"] = function() return { getDataDir = function() return os.tmpname() end } end
+package.preload["ffi/sha2"] = function() return { md5 = function(s) return s end } end
 package.preload["features.wallpaper.setting"] = function() error("absent") end
 package.preload["features.lockscreen.setting"] = function() error("absent") end
 

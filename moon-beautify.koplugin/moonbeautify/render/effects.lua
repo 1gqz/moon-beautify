@@ -8,10 +8,11 @@
 坐标与相位都是确定性的（同一格图每次位置一致），
 只有 phase 在推进 —— 这样加帧、换帧都不会闪烁错位。
 
-@module moonbeautify.effects
+@module moonbeautify.render.effects
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
+local _ = require("moonbeautify.l10n")
 
 local C8 = Blitbuffer.Color8
 
@@ -19,7 +20,7 @@ local Effects = {}
 
 Effects.kinds = { glitter = true, rain = true, stars = true }
 
-Effects.LABEL = { glitter = "细闪", rain = "雨滴", stars = "星星" }
+Effects.LABEL = { glitter = _("细闪"), rain = _("雨滴"), stars = _("星星") }
 
 
 
