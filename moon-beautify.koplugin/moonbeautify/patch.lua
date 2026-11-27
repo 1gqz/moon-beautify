@@ -1,11 +1,12 @@
 --[[--
-对月读本体的四处轻量补丁（不改月读源码，只替换模块表上的函数）。
+对月读本体的若干轻量补丁（不改月读源码，只替换模块表上的函数）。
 
 1. Icon.widget / Icon.label：name 看起来是图片路径（含 / 且后缀是图片）就画图，否则走原字体图标。
 2. Tabbar.widget：按配置 tab_icons[tab.id] 把底栏格子的 icon 换成图片路径。
-3. Base.build / Base.refresh：给指定组件的内容外面套背景图（配置 widget_bg[组件 id]）、
-   叠花边（配置 widget_lace：all 统一 + 组件 id 覆盖）。
-4. 设置入口（settings.entries）另在 settings.lua。
+3. Base.build / Base.refresh：按组件自己的配置套背景图（widget_bg[组件 id]）、叠顶层图（widget_lace[组件 id]）；
+   两者都按取景选区显示；不提供全组件通用背景/顶层图，组件尺寸不同会变形。
+4. 首页并排组合、选图器目录记忆、输入法键盘背景分别由 rows.lua / 本文件 / 本文件处理。
+5. 设置入口（settings.entries）另在 settings.lua。
 
 全部包在 pcall 里，月读升级导致字段变化时最多失效，不影响启动。
 
@@ -183,18 +184,21 @@ local function decorate(self, widget)
     if isBadgeOrFrame(self.id) then return widget end
     local ok, wrapped = pcall(function()
         local conf = Store.conf()
-        -- 花边：逐组件设置（false/空串表示关）
-        -- 值是字符串（旧格式，纯路径）或表 { src = 路径, fit, ax, ay }
-        local lace, laceFit, laceAnchor, laceFocus
+        -- 顶层图：逐组件设置（false/空串表示关）
+        -- 值是字符串（旧格式，纯路径）或表 { src = 路径, focus = 取景选区 }
+        -- 显示方式与组件背景一致：统一按取景选区，没设选区就按整图铺满。
+        local lace, laceFocus
         local laceConf = conf.widget_lace
         if type(laceConf) == "table" then lace = laceConf[self.id] end
         if type(lace) == "table" then
-            laceFit = lace.fit
-            laceAnchor = { x = tonumber(lace.ax) or 0.5, y = tonumber(lace.ay) or 0.5 }
             laceFocus = require("moonbeautify.view").focusOf(lace.focus)
             lace = lace.src
         end
-        if type(lace) ~= "string" or lace == "" then lace = nil end
+        if type(lace) ~= "string" or lace == "" then
+            lace = nil
+        elseif not laceFocus then
+            laceFocus = { x = 0, y = 0, w = 1, h = 1 }
+        end
         local item = type(conf.widget_bg) == "table" and conf.widget_bg[self.id] or nil
         local hasBg = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
         local bgAnchor = hasBg and { x = tonumber(item.ax) or 0.5, y = tonumber(item.ay) or 0.5 } or nil
@@ -213,7 +217,7 @@ local function decorate(self, widget)
         end
         return require("moonbeautify.view").background(w, h,
             hasBg and item.src or nil, hasBg and (tonumber(item.veil) or 0) or 0, inner, lace,
-            hasBg and item.fit or nil, laceFit, bgAnchor, laceAnchor, bgFocus, laceFocus)
+            hasBg and item.fit or nil, bgAnchor, bgFocus, laceFocus)
     end)
     if ok and wrapped then return wrapped end
     return widget
@@ -317,11 +321,121 @@ local function patchPicker()
     end
 end
 
+--- 补丁 6：输入法键盘背景 + 按键透明度。
+--- 两个 hook 点：
+---   1) CenterContainer.paintTo（整个键盘绘制）：铺背景图
+---   2) 按键内部 FrameContainer.paintTo（key[1]）：关白底 + 半透明提亮 + 格子边框常驻。
+---      必须挂在 FrameContainer 而不是 VirtualKey：点击高亮时 KOReader 用
+---      widgetRepaint(self[1]) 只重绘按键自身，绕过 VirtualKey.paintTo。
+--- 不碰 widget 树结构：候选词条依赖 kb[1][1][1][1] 固定链、kb.layout 导航。
+local function patchKeyboard()
+    local VK = require("ui/widget/virtualkeyboard")
+    if VK._beautify_ime_bg then return end
+    VK._beautify_ime_bg = true
+
+    -- 关掉按键点击闪烁：invert() 会画出 focus 高亮（白格子），并在 e-ink 上
+    -- 经 yieldToEPDC 保持那一帧，导致"按完格子发白"。关掉后 onTapSelect 走
+    -- else 分支不做 invert，透明格子保持稳定。仅在配置了键盘背景时改动。
+    pcall(function()
+        local item = Store.conf().ime_bg
+        if type(item) == "table" and type(item.src) == "string" and item.src ~= "" and _G.G_reader_settings then
+            _G.G_reader_settings:makeFalse("flash_keyboard")
+        end
+    end)
+
+    local orig_addKeys = VK.addKeys
+    VK.addKeys = function(self, ...)
+        orig_addKeys(self, ...)
+        -- 兜底：按键刚在 orig_addKeys 里创建（已按旧设置读入 flash_keyboard），
+        -- 有键盘背景时逐个关掉点击闪烁，避免 invert 高亮帧把格子涂白。
+        pcall(function()
+            local item = Store.conf().ime_bg
+            if type(item) == "table" and type(item.src) == "string" and item.src ~= "" then
+                local vg = self[1] and self[1][1] and self[1][1][1] and self[1][1][1][1]
+                if type(vg) == "table" then
+                    for _i, row in ipairs(vg) do
+                        if type(row) == "table" then
+                            for _j, key in ipairs(row) do
+                                if type(key) == "table" then key.flash_keyboard = false end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            local center = self[1] and self[1][1] and self[1][1][1]
+            if not (center and center.paintTo and center.dimen) then return end
+
+            -- 1) 整个键盘绘制时铺背景图
+            if not center._beautify_bg then
+                center._beautify_bg = true
+                local orig_paint = center.paintTo
+                center.paintTo = function(widget, bb, x, y)
+                    local item = Store.conf().ime_bg
+                    local has_src = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
+                    local w, h = widget.dimen.w, widget.dimen.h
+                    if has_src and w and h and w > 0 and h > 0 then
+                        pcall(function()
+                            require("moonbeautify.bg").layer(item.src, w, h, nil, nil, item.focus):paintTo(bb, x, y)
+                            local veil = tonumber(item.veil) or 0
+                            if veil > 0 then bb:lightenRect(x, y, w, h, veil / 100) end
+                        end)
+                    end
+                    return orig_paint(widget, bb, x, y)
+                end
+            end
+
+            -- 2) 逐个 hook 按键内部 FrameContainer（key[1]）的 paintTo。
+            --    Color 是 cdata：一律用 rawget + type 判断，不用 == / ~=。
+            local vg = center[1]
+            if type(vg) ~= "table" then return end
+            for _i, row in ipairs(vg) do
+                if type(row) == "table" then
+                    for _j, key in ipairs(row) do
+                        local frame = type(key) == "table" and key[1]
+                        if type(frame) == "table" and frame.paintTo and type(rawget(frame, "background")) == "cdata"
+                                and not frame._beautify_keyalpha then
+                            frame._beautify_keyalpha = true
+                            local orig_frame_paint = frame.paintTo
+                            frame.paintTo = function(widget, bb, fx, fy)
+                                local item = Store.conf().ime_bg
+                                local alpha = (type(item) == "table" and tonumber(item.key_alpha)) or 0
+                                if alpha > 100 then alpha = 100 end
+                                local bg = rawget(widget, "background")
+                                if alpha > 0 and type(bg) == "cdata" then
+                                    local white = (100 - alpha) / 100 * 0.4
+                                    local d = widget.dimen
+                                    if white > 0 and d then
+                                        pcall(function() bb:lightenRect(fx, fy, d.w, d.h, white) end)
+                                    end
+                                    -- 关白底（false 短路 if self.background），格子用常驻内边框
+                                    local saved_bg, saved_inner = bg, widget.inner_bordersize
+                                    widget.background = false
+                                    local focus_bs = type(key) == "table" and key.focused_bordersize or nil
+                                    if type(focus_bs) == "number" and focus_bs > 0 then
+                                        widget.inner_bordersize = focus_bs
+                                    end
+                                    local ok, err = pcall(orig_frame_paint, widget, bb, fx, fy)
+                                    widget.background = saved_bg
+                                    widget.inner_bordersize = saved_inner
+                                    if not ok then error(err) end
+                                else
+                                    return orig_frame_paint(widget, bb, fx, fy)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end
 --- 安装全部补丁（幂等）。
 function Patch.install()
     if installed then return end
     installed = true
-    for _idx, fn in ipairs({ patchIcon, patchTabbar, patchHome, patchRows, patchPicker }) do
+    for _idx, fn in ipairs({ patchIcon, patchTabbar, patchHome, patchRows, patchPicker, patchKeyboard }) do
         local ok = pcall(fn)
         if not ok then
             pcall(function() require("utils.log").error("moonbeautify patch failed") end)

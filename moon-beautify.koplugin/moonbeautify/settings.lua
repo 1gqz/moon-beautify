@@ -1,5 +1,5 @@
 --[[--
-设置界面：组件自己的设置（首页编辑态的齿轮）+ 月读设置页里的两行入口（底栏图标 / 组件背景）。
+设置界面：组件自己的设置（首页编辑态的齿轮）+ 月读设置页里的外观与主题入口（底栏图标、组件背景/顶层图、并排组合、主题管理）。
 
 都是月读自己的控件（List、PathPicker、Spin、Row），选完写扩展配置、落盘、重画。
 
@@ -348,13 +348,13 @@ local function spinning(conf, prefix)
     return (tonumber(conf[prefix .. "spin"]) or 0) > 0
 end
 
---- 从配置前缀还原显示名："badge_" → 吧唧；"badge2_" → 吧唧 2
+--- 从配置前缀还原显示名："badge_" → 吧唧1；"badge2_" → 吧唧2
 ---@param prefix string
 ---@return string
 local function prefixTitle(prefix)
     local n = tonumber(prefix:match("^badge(%d*)_$") or "")
-    if not n or n == 1 then return _("吧唧") end
-    return T(_("吧唧 %1"), n)
+    if not n or n == 1 then return _("吧唧1") end
+    return T(_("吧唧%1"), n)
 end
 
 --- 吧唧的设置。每个吧唧实例用 id 前缀区分（badge_ / badge2_ ...），互不影响。
@@ -741,7 +741,88 @@ local function widgetBgPage(desktop)
     end)
 end
 
+--- 输入法键盘背景：选图 / 取景选区 / 提亮 / 移除
+---@param desktop table|nil
+local function imeBgDialog(desktop)
+    local function nameOf(path)
+        if type(path) ~= "string" or path == "" then return nil end
+        return path:match("([^/]+)$") or path
+    end
+    local function makeItems()
+        local c = Store.conf()
+        local item = type(c.ime_bg) == "table" and c.ime_bg or {}
+        local focus = type(item.focus) == "table" and require("moonbeautify.view").focusOf(item.focus) or nil
+        local name = nameOf(item.src)
+        return {
+            { value = "pick", text = name and T(_("更换背景图：%1"), name) or _("选一张背景图…"), keep_open = true },
+            { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
+            { value = "veil", text = T(_("内容提亮：%1%"), tonumber(item.veil) or 0), keep_open = true },
+            { value = "alpha", text = T(_("按键透明度：%1%"), tonumber(item.key_alpha) or 0), keep_open = true },
+            { value = "reset", text = _("移除背景"), enabled = name ~= nil, keep_open = true },
+        }
+    end
+    local dlg
+    local function refreshDlg()
+        if dlg then pcall(function() dlg.items = makeItems(); dlg:refresh() end) end
+    end
+    local function save(mutate)
+        local c = Store.conf()
+        c.ime_bg = type(c.ime_bg) == "table" and c.ime_bg or {}
+        mutate(c.ime_bg)
+        if next(c.ime_bg) == nil then c.ime_bg = nil end
+        Store.save()
+        repaint(desktop)
+        refreshDlg()
+    end
+    dlg = choose(_("输入法键盘背景"), makeItems, nil, function(value)
+        local c = Store.conf()
+        local item = type(c.ime_bg) == "table" and c.ime_bg or {}
+        if value == "pick" then
+            pickPath(desktop, item.src, true, function(path)
+                save(function(bg) bg.src = path end)
+            end)
+        elseif value == "anchor" then
+            local focus = type(item.focus) == "table" and require("moonbeautify.view").focusOf(item.focus) or nil
+            chooseFocus(item.src, focus, function(v)
+                -- 只落盘不 repaint：避免全屏选区关闭后重建叠层导致设置页重现
+                local cc = Store.conf()
+                cc.ime_bg = type(cc.ime_bg) == "table" and cc.ime_bg or {}
+                cc.ime_bg.focus = { x = v.x, y = v.y, w = v.w, h = v.h }
+                Store.save()
+                refreshDlg()
+            end, desktop)
+        elseif value == "veil" then
+            Spin:new{
+                title = _("内容提亮"),
+                fields = { {
+                    value = tonumber(item.veil) or 0, min = 0, max = 90, step = 10,
+                    format = function(v) return v .. "%" end,
+                } },
+                callback = function(v)
+                    save(function(bg) bg.veil = math.floor(v) end)
+                end,
+            }:show()
+        elseif value == "alpha" then
+            Spin:new{
+                title = _("按键透明度"),
+                fields = { {
+                    value = tonumber(item.key_alpha) or 0, min = 0, max = 100, step = 10,
+                    format = function(v) return v .. "%" end,
+                } },
+                callback = function(v)
+                    save(function(bg) bg.key_alpha = math.floor(v) end)
+                end,
+            }:show()
+        elseif value == "reset" then
+            save(function(bg)
+                for k in pairs(bg) do bg[k] = nil end
+            end)
+        end
+    end)
+end
+
 local refreshThemePage -- 前置声明，定义在 themePageTable 之后
+local themeTypePartsPage -- 二级页面前置声明
 
 --- 轻提示（KOReader 原生 InfoMessage：左侧信息图标，点一下即关，默认 2 秒自动消失）
 ---@param text string
@@ -886,9 +967,11 @@ local function themeSave(desktop)
             end
             local ok, dir_or_err = Theme.save(safe)
             if ok then
-                put(desktop, "active_theme", safe)
+                -- 保存当前配置只是做一份快照，不等于应用它。
+                -- 当前配置仍指向本地图片/原主题，所以 active_theme 不能改，
+                -- 否则新主题会显示“应用中”，但部件改动影响不到当前配置。
                 refreshThemePage(desktop)
-                themeToast(T(_("已保存为主题：%1"), safe))
+                themeToast(T(_("已保存为主题：%1（未应用）"), safe))
             else
                 themeToast(T(_("保存失败：%1"), dir_or_err or ""))
             end
@@ -929,13 +1012,347 @@ local function themeImport(desktop)
     }:show()
 end
 
---- 单个主题：应用 / 导出 / 删除
+--- 部件：启用/停用、查看信息
+---@param desktop table|nil
+---@param part table Theme.parts() 返回的部件
+local function themePartItem(desktop, part)
+    local Theme = require("moonbeautify.theme")
+    local conf = Store.conf()
+    local active = conf.theme_parts and conf.theme_parts[part.slot] == part.id
+
+    local PartCopy = require("moonbeautify.part_copy")
+    local imageCount = #PartCopy.images(part.conf)
+    local items = {
+        { value = "toggle", text = active and _("停用这个部件") or _("启用这个部件"),
+          mandatory = active and _("当前已启用") or _("只替换它负责的设置") },
+    }
+    if imageCount > 0 then
+        items[#items + 1] = { value = "copy", text = _("复制到其他文件夹"),
+            mandatory = T(_("%1 项图片/文件夹改用新路径，可脱离主题包"), tostring(imageCount)) }
+    end
+    items[#items + 1] = { value = "delete", text = _("删除这个部件"), mandatory = _("从主题包移除并清理图片") }
+    choose(part.name or part.id, items, nil, function(v)
+        if v == "toggle" then
+            local ok, err = Theme.applyPart(part.theme, part.slot, not active)
+            if ok then
+                refreshThemePage(desktop)
+                repaint(desktop)
+                themeToast(active and _("已停用部件") or _("已启用部件"))
+            else
+                themeToast(T(_("操作失败：%1"), err or ""))
+            end
+        elseif v == "copy" then
+            pickPath(desktop, nil, false, function(dir)
+                local newConf, files = PartCopy.copyTo(part.conf, dir)
+                if #files == 0 then
+                    themeToast(_("没有可复制的图片"))
+                    return
+                end
+                PartCopy.apply(part, newConf)
+                Theme.updatePartConf(part.theme, part.slot, newConf)
+                repaint(desktop)
+                refreshThemePage(desktop)
+                themeToast(T(_("已复制 %1 项图片到 %2，之后可以删除原主题包"),
+                    tostring(#files), dir), 5)
+            end)
+        elseif v == "delete" then
+            choose(_("确认删除部件"), {
+                { value = "yes", text = _("删除"), mandatory = part.name or part.slot },
+                { value = "no", text = _("取消") },
+            }, nil, function(confirm)
+                if confirm ~= "yes" then return end
+                local ok, err = Theme.deletePart(part.theme, part.slot)
+                if ok then
+                    refreshThemePage(desktop)
+                    repaint(desktop)
+                    themeToast(_("已删除部件"))
+                else
+                    themeToast(T(_("删除失败：%1"), err or ""))
+                end
+            end)
+        end
+    end)
+end
+
+--- 部件卡片：预览图 + 标题 + 来源，两列网格里的一格
+local Theme = require("moonbeautify.theme")
+local CARD_IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true, bmp = true }
+
+local function resolveCardAsset(raw, theme)
+    if type(raw) ~= "string" or raw == "" then return nil end
+    if raw:sub(1, 8) == "@assets/" then
+        local dir = Theme.dir(theme)
+        if not dir then return nil end
+        return dir .. "/assets/" .. raw:sub(9)
+    end
+    return raw
+end
+
+--- 收集一个部件里的全部图片：单图直接列，文件夹展开成多张
+local function collectPartImages(part)
+    local out, seen = {}, {}
+    local function add(path)
+        if not path or seen[path] then return end
+        local mode = lfs.attributes(path, "mode")
+        if mode == "file" then
+            local ext = path:lower():match("%.(%w+)$")
+            if ext and CARD_IMAGE_EXT[ext] then
+                seen[path] = true
+                out[#out + 1] = path
+            end
+        elseif mode == "directory" then
+            seen[path] = true
+            local names = {}
+            for n in lfs.dir(path) do
+                if n ~= "." and n ~= ".." then
+                    local p = path .. "/" .. n
+                    if lfs.attributes(p, "mode") == "file" then
+                        local e = n:lower():match("%.(%w+)$")
+                        if e and CARD_IMAGE_EXT[e] then names[#names + 1] = p end
+                    end
+                end
+            end
+            table.sort(names)
+            for _, p in ipairs(names) do
+                if not seen[p] then seen[p] = true; out[#out + 1] = p end
+            end
+        end
+    end
+    local function walk(v)
+        if type(v) == "string" then
+            add(resolveCardAsset(v, part.theme))
+        elseif type(v) == "table" then
+            local keys = {}
+            for k in pairs(v) do keys[#keys + 1] = k end
+            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+            for _, k in ipairs(keys) do walk(v[k]) end
+        end
+    end
+    walk(part.conf)
+    return out
+end
+
+--- 图片缩略图网格：按可用宽度均分列宽，居中对齐，行距收紧
+---@return table widget, integer 实际行数
+local function imageGrid(paths, width, thumb, max_rows)
+    local UITheme = require("ui.themes")
+    local ImageWidget = require("ui.themes.widgets.image")
+    local VerticalGroup = require("ui/widget/verticalgroup")
+    local VerticalSpan = require("ui/widget/verticalspan")
+    local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan = require("ui/widget/horizontalspan")
+    local t = UITheme.current()
+    local gap = UITheme.px(t.space.xs)
+    thumb = thumb or UITheme.px(48)
+    local per_row = math.max(1, math.floor((width + gap) / (thumb + gap)))
+    local rows, row, n = {}, HorizontalGroup:new{}, 0
+    for _, path in ipairs(paths) do
+        if max_rows and #rows >= max_rows then break end
+        if n > 0 and n % per_row == 0 then
+            rows[#rows + 1] = row
+            row = HorizontalGroup:new{}
+        end
+        if n % per_row > 0 then row[#row + 1] = HorizontalSpan:new{ width = gap } end
+        row[#row + 1] = ImageWidget.widget{
+            src = path, width = thumb, height = thumb,
+            style = { border = 0, shadow = 0 }, alpha = true, stretch = true,
+        }
+        n = n + 1
+    end
+    if #row > 0 then rows[#rows + 1] = row end  -- 正好铺满一行时也要收进去
+
+    local out = VerticalGroup:new{ align = "center" }
+    for i, r in ipairs(rows) do
+        if i > 1 then out[#out + 1] = VerticalSpan:new{ width = gap } end
+        local used = 0
+        for _, widget in ipairs(r) do used = used + widget:getSize().w end
+        local rest = math.max(0, width - used)
+        out[#out + 1] = HorizontalGroup:new{
+            HorizontalSpan:new{ width = math.floor(rest / 2) },
+            r,
+            HorizontalSpan:new{ width = rest - math.floor(rest / 2) },
+        }
+    end
+    return out, #rows
+end
+
+local function typeGridRow(desktop, width, rowTypes)
+    local UITheme = require("ui.themes")
+    local Parts = require("moonbeautify.parts")
+    local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan = require("ui/widget/horizontalspan")
+    local gap = UITheme.px(UITheme.current().space.sm)
+    local cell_w = math.floor((width - gap) / 2)
+    local row = HorizontalGroup:new{}
+    local function addCell(item, index)
+        if not item then return end
+        if index > 1 then row[#row + 1] = HorizontalSpan:new{ width = gap } end
+        row[#row + 1] = Row.widget({
+            width = cell_w,
+            icon = Parts.TYPE_ICON[item.key] or "palette",
+            title = item.label or item.key,
+            subtitle = T(_("%1 个已导入部件"), tostring(item.count)),
+            chevron = true,
+            callback = function()
+                Overlay.push(desktop, themeTypePartsPage(desktop, item.key, item.label))
+            end,
+        })
+    end
+    addCell(rowTypes[1], 1)
+    addCell(rowTypes[2], 2)
+    return row
+end
+
+--- 一个主题里只有一份的类型：页面/分组标题已经说明是什么，行内不再重复写部件名
+local SINGLETON_PART_TYPES = {
+    icons = true, wallpaper = true, lockscreen = true, ime = true,
+}
+
+local function partNeedsLabel(typeKey)
+    return not SINGLETON_PART_TYPES[typeKey]
+end
+
+--- 缩略图尺寸：壁纸、锁屏壁纸、键盘背景显著放大，其它部件保持图标大小
+local function thumbForType(typeKey)
+    local UITheme = require("ui.themes")
+    if typeKey == "wallpaper" or typeKey == "lockscreen" or typeKey == "ime" then
+        return UITheme.px(112)
+    end
+    return UITheme.px(44)
+end
+
+--- 虚线分隔：短横 + 空隙交替
+local function dashedLine(width, color, h)
+    local UITheme = require("ui.themes")
+    local Geom = require("ui/geometry")
+    local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan = require("ui/widget/horizontalspan")
+    local LineWidget = require("ui/widget/linewidget")
+    local Blitbuffer = require("ffi/blitbuffer")
+    local g = HorizontalGroup:new{}
+    local dash, space, x = UITheme.px(8), UITheme.px(5), 0
+    while x < width do
+        local w = math.min(dash, width - x)
+        g[#g + 1] = LineWidget:new{
+            background = Blitbuffer.Color8(color), dimen = Geom:new{ w = w, h = h },
+        }
+        x = x + w
+        if x < width then
+            local s = math.min(space, width - x)
+            g[#g + 1] = HorizontalSpan:new{ width = s }
+            x = x + s
+        end
+    end
+    return g
+end
+
+--- 单个部件的一行：多实例类型显示部件名，单例类型只显示图片
+---@param is_last boolean 是否为该主题最后一行（最后一行实线，其余虚线）
+local function partImagesRow(desktop, part, width, typeKey, is_last)
+    local UITheme = require("ui.themes")
+    local Geom = require("ui/geometry")
+    local Text = require("ui.themes.widgets.text")
+    local Tap = require("ui.themes.widgets.tap")
+    local CenterContainer = require("ui/widget/container/centercontainer")
+    local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan = require("ui/widget/horizontalspan")
+    local t = UITheme.current()
+    local show_label = partNeedsLabel(typeKey)
+    local label = show_label and (part.name or part.label or part.slot or part.type) or nil
+    local imgs = collectPartImages(part)
+    local thumb = thumbForType(typeKey)
+    local gap = show_label and UITheme.px(t.space.md) or 0
+    local label_w = 0
+    if show_label then
+        label_w = math.min(UITheme.px(120), math.max(UITheme.px(72), math.floor(width * 0.24)))
+    end
+
+    local grid = imageGrid(imgs, width - label_w - gap, thumb)
+    local row_h = math.max(grid:getSize().h, thumb + UITheme.px(t.space.sm) * 2)
+    local content
+    if show_label then
+        local label_wd = CenterContainer:new{
+            dimen = Geom:new{ w = label_w, h = row_h },
+            Text.line("caption", label, { width = label_w - UITheme.px(t.space.xs) * 2,
+                color = UITheme.color(t.color.chrome) }),
+        }
+        content = CenterContainer:new{
+            dimen = Geom:new{ w = width, h = row_h },
+            HorizontalGroup:new{ align = "center", label_wd, HorizontalSpan:new{ width = gap }, grid },
+        }
+    else
+        content = CenterContainer:new{ dimen = Geom:new{ w = width, h = row_h }, grid }
+    end
+    local Blitbuffer = require("ffi/blitbuffer")
+    local LineWidget = require("ui/widget/linewidget")
+    local VerticalGroup = require("ui/widget/verticalgroup")
+    local divider = math.max(1, UITheme.px(t.row.divider))
+    local line = is_last
+        and LineWidget:new{
+            background = Blitbuffer.Color8(t.color.rule),
+            dimen = Geom:new{ w = width, h = divider },
+        }
+        or dashedLine(width, t.color.rule, divider)
+    local wrapped = VerticalGroup:new{ align = "left", content, line }
+    if desktop then
+        return Tap.wrap(wrapped, function() themePartItem(desktop, part) end)
+    end
+    return wrapped
+end
+
+--- 主题预览页：按部件类型分组，把该主题下的图片全列出来
+local function themePreviewPage(desktop, name)
+    return {
+        title = name,
+        sections = function()
+            local Theme = require("moonbeautify.theme")
+            local Parts = require("moonbeautify.parts")
+            local buckets = {}
+            for _, part in ipairs(Theme.parts(name)) do
+                if #collectPartImages(part) > 0 then
+                    local key = part.group or Parts.groupOfType(part.type)
+                    if not buckets[key] then
+                        buckets[key] = { label = Parts.TYPE_LABEL[key] or key, parts = {} }
+                    end
+                    buckets[key].parts[#buckets[key].parts + 1] = part
+                end
+            end
+            local keys = {}
+            for k in pairs(buckets) do keys[#keys + 1] = k end
+            table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+            local sections = {}
+            for _, k in ipairs(keys) do
+                local group = buckets[k]
+                local rows = {}
+                for _i, part in ipairs(group.parts) do
+                    rows[#rows + 1] = function(iw)
+                        return partImagesRow(desktop, part, iw, k, _i == #group.parts)
+                    end
+                end
+                sections[#sections + 1] = {
+                    title = group.label, rows = rows, title_style = "body", title_bold = true,
+                }
+            end
+            if #sections == 0 then
+                sections[1] = { title = _("预览"), rows = { function(iw)
+                    return Row.widget({ width = iw, icon = "palette", chevron = false,
+                        title = _("这个主题没有图片"), subtitle = _("只有设置项") })
+                end } }
+            end
+            return sections
+        end,
+    }
+end
+
+--- 单个主题：预览 / 应用 / 导出 / 删除
 ---@param desktop table|nil
 ---@param name string
 ---@param active string|nil 当前应用中的主题名
 local function themeItem(desktop, name, active)
     local applied = name == active
     choose(name, {
+        { value = "preview", text = _("预览"),
+          mandatory = _("查看该主题的所有图片") },
         { value = "apply", text = _("应用"),
           mandatory = applied and _("当前正在使用中") or _("点击应用") },
         { value = "export", text = _("导出主题 zip"),
@@ -944,7 +1361,9 @@ local function themeItem(desktop, name, active)
           mandatory = applied and _("使用中的主题无法删除") or _("删掉存档和图片") },
     }, nil, function(v)
         local Theme = require("moonbeautify.theme")
-        if v == "apply" then
+        if v == "preview" then
+            Overlay.push(desktop, themePreviewPage(desktop, name))
+        elseif v == "apply" then
             local ok, err = Theme.apply(name)
             if ok then
                 refreshThemePage(desktop)
@@ -976,45 +1395,225 @@ local function themeItem(desktop, name, active)
     end)
 end
 
---- 主题管理页：保存 / 导入 / 已导入主题列表
+--- 并排关系去重用的稳定键
+local function relationKey(row)
+    local ids = {}
+    for _, id in ipairs(type(row) == "table" and row or {}) do
+        if id ~= nil and id ~= "" then ids[#ids + 1] = tostring(id) end
+    end
+    table.sort(ids)
+    return table.concat(ids, "|")
+end
+
+--- 从部件槽位还原组件 id（comp_clock → clock）
+local function partCompId(part)
+    return type(part.slot) == "string" and part.slot:match("^comp_(.+)$") or nil
+end
+
+--- 并排成员显示名：系统组件用官方名称，合成组件用部件名兜底
+local function relationLabels(parts)
+    local labels = {}
+    for _, comp in ipairs(componentList()) do
+        labels[comp.id] = comp.label or comp.id
+    end
+    for _, part in ipairs(parts) do
+        local id = partCompId(part)
+        if id and not labels[id] then labels[id] = part.name or part.label or id end
+    end
+    return labels
+end
+
+local function relationText(row, labels)
+    local names = {}
+    for _, id in ipairs(row or {}) do
+        names[#names + 1] = labels[tostring(id)] or tostring(id)
+    end
+    return table.concat(names, " + ")
+end
+
+--- 并排组合单独成行：图标、编号、成员名，避免跟普通组件图片混在一起
+local function relationRow(desktop, info, width, labels, index, is_last)
+    local UITheme = require("ui.themes")
+    local Geom = require("ui/geometry")
+    local Blitbuffer = require("ffi/blitbuffer")
+    local LineWidget = require("ui/widget/linewidget")
+    local VerticalGroup = require("ui/widget/verticalgroup")
+    local t = UITheme.current()
+    local divider = math.max(1, UITheme.px(t.row.divider))
+    local line = is_last
+        and LineWidget:new{
+            background = Blitbuffer.Color8(t.color.rule),
+            dimen = Geom:new{ w = width, h = divider },
+        }
+        or dashedLine(width, t.color.rule, divider)
+    local row = Row.widget({
+        width = width,
+        icon = "view_column",
+        title = T(_("并排组合 %1"), tostring(index)),
+        subtitle = relationText(info.row, labels),
+        chevron = true,
+        divider = false,
+        callback = desktop and function() themePartItem(desktop, info.part) end or nil,
+    })
+    return VerticalGroup:new{ align = "left", row, line }
+end
+
+--- 部件按来源主题分组。
+--- 组件页每个主题只保留主题标题：先列有图片的组件，再列并排组合关系。
+local function appendCardGrid(desktop, parts, typeKey)
+    local groups = {}
+    for _i, part in ipairs(parts) do
+        local src = part.theme or _("未知主题")
+        if not groups[src] then groups[src] = {} end
+        groups[src][#groups[src] + 1] = part
+    end
+    local names = {}
+    for n in pairs(groups) do names[#names + 1] = n end
+    table.sort(names)
+    if #names == 0 then
+        return { { title = _("部件"), rows = { function(iw)
+            return Row.widget({ width = iw, icon = "palette", chevron = false,
+                title = _("还没有部件"), subtitle = _("先保存或导入一套主题") })
+        end } } }
+    end
+    local sections = {}
+    for _i, name in ipairs(names) do
+        local group = groups[name]
+        if typeKey == "component" then
+            local images, relations, seen = {}, {}, {}
+            local labels = relationLabels(group)
+            for _, part in ipairs(group) do
+                if #collectPartImages(part) > 0 then
+                    images[#images + 1] = part
+                end
+                for _, row in ipairs(type(part.conf) == "table" and type(part.conf.rows) == "table"
+                        and part.conf.rows or {}) do
+                    local key = relationKey(row)
+                    if key ~= "" and not seen[key] then
+                        seen[key] = true
+                        relations[#relations + 1] = { part = part, row = row, text = relationText(row, labels) }
+                    end
+                end
+            end
+            table.sort(relations, function(a, b) return a.text < b.text end)
+            local total = #images + #relations
+            local rows = {}
+            for _i, part in ipairs(images) do
+                local last = _i == total
+                rows[#rows + 1] = function(iw)
+                    return partImagesRow(desktop, part, iw, typeKey, last)
+                end
+            end
+            for _i, info in ipairs(relations) do
+                local last = (#images + _i) == total
+                rows[#rows + 1] = function(iw)
+                    return relationRow(desktop, info, iw, labels, _i, last)
+                end
+            end
+            if #rows > 0 then
+                sections[#sections + 1] = {
+                    title = name, rows = rows, title_style = "body", title_bold = true,
+                }
+            end
+        else
+            local rows = {}
+            for _i, part in ipairs(group) do
+                rows[#rows + 1] = function(iw)
+                    return partImagesRow(desktop, part, iw, typeKey, _i == #group)
+                end
+            end
+            sections[#sections + 1] = {
+                title = name, rows = rows, title_style = "body", title_bold = true,
+            }
+        end
+    end
+    return sections
+end
+
+--- 部件类型页：整页只列各种部件类型
+local function themeTypesPageTable(desktop)
+    return {
+        title = _("部件类型"),
+        sections = function()
+            local Theme = require("moonbeautify.theme")
+            local Parts = require("moonbeautify.parts")
+            local counts = {}
+            for _, part in ipairs(Theme.allParts()) do
+                local key = part.group or Parts.groupOfType(part.type)
+                counts[key] = (counts[key] or 0) + 1
+            end
+            local types = {}
+            for _, key in ipairs({ "icons", "badge", "frame", "component",
+                                   "wallpaper", "lockscreen", "ime" }) do
+                types[#types + 1] = { key = key, label = Parts.TYPE_LABEL[key] or key,
+                                      count = counts[key] or 0 }
+            end
+            local rows = {}
+            for i = 1, #types, 2 do
+                local pair = { types[i], types[i + 1] }
+                rows[#rows + 1] = function(iw) return typeGridRow(desktop, iw, pair) end
+            end
+            return { { rows = rows } }
+        end,
+    }
+end
+
+--- 某个部件类型下的部件页
+themeTypePartsPage = function(desktop, typeKey, label)
+    return {
+        title = label or require("moonbeautify.parts").TYPE_LABEL[typeKey] or typeKey,
+        sections = function()
+            local Theme = require("moonbeautify.theme")
+            local Parts = require("moonbeautify.parts")
+            local parts = {}
+            for _, part in ipairs(Theme.allParts()) do
+                local group = part.group or Parts.groupOfType(part.type)
+                if group == typeKey then parts[#parts + 1] = part end
+            end
+            return appendCardGrid(desktop, parts, typeKey)
+        end,
+    }
+end
+
+--- 主题类型页：整页罗列已导入主题
+local function themeTypeListPage(desktop)
+    return {
+        title = _("主题类型"),
+        sections = function()
+            local Theme = require("moonbeautify.theme")
+            local active = Store.conf().active_theme
+            local rows = {}
+            for _idx, name in ipairs(Theme.list()) do
+                rows[#rows + 1] = function(iw)
+                    local n, kb = Theme.stat(name)
+                    local applied = name == active
+                    return Row.widget({
+                        width = iw, icon = "palette", title = name,
+                        subtitle = T(_("%1 张图 · %2 KB"), n, kb),
+                        status = applied and (Theme.dirty(name) and _("应用中（有修改）") or _("应用中")) or nil,
+                        status_on = applied, chevron = true,
+                        callback = function() themeItem(desktop, name, active) end,
+                    })
+                end
+            end
+            if #rows == 0 then
+                rows[1] = function(iw)
+                    return Row.widget({ width = iw, icon = "palette", chevron = false,
+                        title = _("还没有主题"), subtitle = _("先保存当前配置，或导入一个 zip") })
+                end
+            end
+            return { { rows = rows } }
+        end,
+    }
+end
+
+--- 主题主页：保存与导入 + 主题使用
 ---@param desktop table|nil
 ---@return table page
 local function themePageTable(desktop)
     return {
         title = _("主题"),
         sections = function()
-            local Theme = require("moonbeautify.theme")
-            local active = Store.conf().active_theme
-            local themeRows = {}
-            for _idx, name in ipairs(Theme.list()) do
-                themeRows[#themeRows + 1] = function(iw)
-                    local n, kb = Theme.stat(name)
-                    local applied = name == active
-                    local status
-                    if applied then
-                        status = Theme.dirty(name) and _("应用中（有修改）") or _("应用中")
-                    end
-                    return Row.widget({
-                        width = iw,
-                        icon = "palette",
-                        title = name,
-                        subtitle = T(_("%1 张图 · %2 KB"), n, kb),
-                        status = status,
-                        status_on = applied,
-                        chevron = true,
-                        callback = function() themeItem(desktop, name, active) end,
-                    })
-                end
-            end
-            if #themeRows == 0 then
-                themeRows[#themeRows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, chevron = false, icon = "palette",
-                        title = _("还没有主题"),
-                        subtitle = _("先保存当前配置，或导入一个 zip"),
-                    })
-                end
-            end
             return {
                 { title = _("保存与导入"), rows = {
                     function(iw)
@@ -1034,7 +1633,24 @@ local function themePageTable(desktop)
                         })
                     end,
                 } },
-                { title = _("已导入主题"), rows = themeRows },
+                { title = _("主题使用"), rows = {
+                    function(iw)
+                        return Row.widget({
+                            width = iw, icon = "dashboard_customize", chevron = true,
+                            title = _("按部件类型"),
+                            subtitle = _("底栏图标 / 吧唧 / 相框 / 壁纸…"),
+                            callback = function() Overlay.push(desktop, themeTypesPageTable(desktop)) end,
+                        })
+                    end,
+                    function(iw)
+                        return Row.widget({
+                            width = iw, icon = "palette", chevron = true,
+                            title = _("按主题类型"),
+                            subtitle = _("按导入的套装查看，可预览里面各部件"),
+                            callback = function() Overlay.push(desktop, themeTypeListPage(desktop)) end,
+                        })
+                    end,
+                } },
             }
         end,
     }
@@ -1102,21 +1718,21 @@ local function pickPair(desktop, first)
     end)
 end
 
---- 组件花边总入口：逐个组件设置
+--- 组件顶层图总入口：逐个组件设置（与组件背景一样用取景选区）
 ---@param desktop table|nil
 local function widgetLacePage(desktop)
     local Deco = require("moonbeautify.deco")
     local focusOf = require("moonbeautify.view").focusOf
     local conf = Store.conf()
     local map = type(conf.widget_lace) == "table" and conf.widget_lace or {}
-    -- 取值兼容旧格式：字符串=纯路径；表={ src, fit, focus }
+    -- 取值兼容旧格式：字符串=纯路径；表={ src, focus }
     local function split(v)
-        if type(v) == "string" then return v ~= "" and v or nil, nil, nil end
+        if type(v) == "string" then return v ~= "" and v or nil, nil end
         if type(v) == "table" then
             local p = v.src
-            return (type(p) == "string" and p ~= "") and p or nil, v.fit, focusOf(v.focus)
+            return (type(p) == "string" and p ~= "") and p or nil, focusOf(v.focus)
         end
-        return nil, nil, nil
+        return nil, nil
     end
     local items = {}
     local labels = {}
@@ -1132,7 +1748,7 @@ local function widgetLacePage(desktop)
     end
     List:new{
         title = _("组件花边"),
-        subtitle = _("给单个组件叠一圈花边（透明 PNG，中间镂空不挡内容）"),
+        subtitle = _("和组件背景一样用取景选区（透明 PNG 可镂空，普通图片整张盖住）"),
         items = items,
         centered = true,
         on_select = function(value)
@@ -1143,13 +1759,12 @@ local function widgetLacePage(desktop)
             local function makeItems()
                 local c = Store.conf()
                 local m = type(c.widget_lace) == "table" and c.widget_lace or {}
-                local current, mode, focus = split(m[value])
-                if not Deco.MODES[mode] then mode = "stretch" end
+                local current, focus = split(m[value])
                 local name = nameOf(current)
                 return {
-                    { value = "pick", text = name and T(_("更换花边：%1"), name) or _("选一张花边（透明 PNG）…"), keep_open = true },
+                    { value = "pick", text = name and T(_("更换顶层图：%1"), name) or _("选一张顶层图…"), keep_open = true },
                     { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
-                    { value = "reset", text = _("移除花边"), enabled = current ~= nil, keep_open = true },
+                    { value = "reset", text = _("移除顶层图"), enabled = current ~= nil, keep_open = true },
                 }
             end
             local dlg
@@ -1159,13 +1774,12 @@ local function widgetLacePage(desktop)
             dlg = choose(labels[value] or value, makeItems, nil, function(v)
                 local c = Store.conf()
                 local m = type(c.widget_lace) == "table" and c.widget_lace or {}
-                local current, mode, focus = split(m[value])
-                if not Deco.MODES[mode] then mode = "stretch" end
-                -- 保留已有字段；没选图也能先设 fit/选区，选图时一起写回
-                local function write(src, fit_mode, fit_focus, quiet)
+                local current, focus = split(m[value])
+                -- 保留已有字段；没选图也能先设选区，选图时一起写回
+                local function write(src, fit_focus, quiet)
                     local cc = Store.conf()
                     cc.widget_lace = type(cc.widget_lace) == "table" and cc.widget_lace or {}
-                    cc.widget_lace[value] = { src = src, fit = fit_mode, focus = fit_focus }
+                    cc.widget_lace[value] = { src = src, focus = fit_focus }
                     require("moonbeautify.deco").clear()
                     Store.save()
                     -- 全屏选区关闭后不重建叠层，否则会把底下的拓展/设置页重画出来
@@ -1173,10 +1787,10 @@ local function widgetLacePage(desktop)
                     refreshDlg()
                 end
                 if v == "pick" then
-                    pickPath(desktop, current, true, function(path) write(path, mode, focus) end)
+                    pickPath(desktop, current, true, function(path) write(path, focus) end)
                 elseif v == "anchor" then
                     chooseFocus(current, focus, function(v2)
-                        write(current, mode, { x = v2.x, y = v2.y, w = v2.w, h = v2.h }, true)
+                        write(current, { x = v2.x, y = v2.y, w = v2.w, h = v2.h }, true)
                     end, desktop)
                 elseif v == "reset" then
                     local cc = Store.conf()
@@ -1239,7 +1853,7 @@ local function rowsPage(desktop)
     }:show()
 end
 
---- 月读设置页（外观分组）里的两行入口。
+--- 月读设置页（外观分组）里的外观与主题入口。
 ---@param desktop table|nil
 ---@return table[]
 function Settings.entries(desktop)
@@ -1249,11 +1863,11 @@ function Settings.entries(desktop)
     for _k in pairs(tab_map) do tab_count = tab_count + 1 end
     local bg_map = type(conf.widget_bg) == "table" and conf.widget_bg or {}
     local bg_count = 0
-    for _k in pairs(bg_map) do bg_count = bg_count + 1 end
+    for k in pairs(bg_map) do if k ~= "all" then bg_count = bg_count + 1 end end
     local row_count = type(conf.rows) == "table" and #conf.rows or 0
     local lace_map = type(conf.widget_lace) == "table" and conf.widget_lace or {}
     local lace_count = 0
-    for _k in pairs(lace_map) do lace_count = lace_count + 1 end
+    for k in pairs(lace_map) do if k ~= "all" then lace_count = lace_count + 1 end end
     return {
         {
             id = "tab_icons",
@@ -1302,6 +1916,22 @@ function Settings.entries(desktop)
             end,
         },
         {
+            id = "ime_bg",
+            group = "appearance",
+            order = 42.5,
+            row = function(iw)
+                local has_ime = type(conf.ime_bg) == "table" and type(conf.ime_bg.src) == "string"
+                return Row.widget({
+                    width = iw,
+                    icon = "image",
+                    title = _("输入法背景"),
+                    subtitle = has_ime and _("已给键盘设背景图") or _("给输入法键盘加一张背景图"),
+                    chevron = true,
+                    callback = function() imeBgDialog(desktop) end,
+                })
+            end,
+        },
+        {
             id = "widget_lace",
             group = "appearance",
             order = 42,
@@ -1345,7 +1975,9 @@ function Settings.entries(desktop)
                     subtitle = count > 0 and T(_("%1 套已保存，可随时切换"), count)
                         or _("整套美化连图片存档、分享、一键切换"),
                     chevron = true,
-                    callback = function() Overlay.push(desktop, themePageTable(desktop)) end,
+                    callback = function()
+                        Overlay.push(desktop, themePageTable(desktop))
+                    end,
                 })
             end,
         },

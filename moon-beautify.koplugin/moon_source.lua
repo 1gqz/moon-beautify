@@ -1,10 +1,10 @@
 --[[--
-月读扩展描述：不是书源。往首页加两个图片组件，并补丁两处外观（底栏图片图标 / 组件背景）。
+月读扩展描述：不是书源。往首页加吧唧 / 相框组件，并补丁底栏图标、组件背景与顶层图、并排组合、壁纸与键盘美化等。
 
 契约（api = 1，id = ext.<name>，provides.source = false）：
   home_widgets 简写表 { id, title, icon, build = fun(ctx, w, h), heightRange = fun(ctx, opts), settings = fun(desktop, id) }
   build 返回占满 w × h 的控件；settings 让首页编辑态出现设置按钮（设置里抛错会被月读记日志）。
-  provides.features.setting 往「设置 → 外观」加两行入口。
+  provides.features.setting 往「设置 → 外观」加外观与主题入口。
 组件 id 由月读补成 ext.beautify.<短名>，发布后不要改。
 
 --]]
@@ -89,12 +89,12 @@ return {
     provides = {
         source = false,
         home_widgets = {
-            badgeWidget("badge", "吧唧"),
-            badgeWidget("badge2", "吧唧 2"),
-            badgeWidget("badge3", "吧唧 3"),
-            badgeWidget("badge4", "吧唧 4"),
-            frameWidget("frame", "相框"),
-            frameWidget("frame2", "相框 2"),
+            badgeWidget("badge", "吧唧1"),
+            badgeWidget("badge2", "吧唧2"),
+            badgeWidget("badge3", "吧唧3"),
+            badgeWidget("badge4", "吧唧4"),
+            frameWidget("frame", "相框1"),
+            frameWidget("frame2", "相框2"),
         },
         features = {
             setting = {

@@ -28,6 +28,34 @@ local _ = require("gettext")
 
 local Screen = Device.screen
 
+-- 老款 Kindle（非 MTK 平台）电子纸控制器在连续 "ui" 快刷大面积图片时残影明显，
+-- 手势结束时补一次整屏刷新；新平台保持原样。
+local needEndRefresh = Device:isKindle() and not Device:isMTK()
+
+local function endRefresh(widget)
+    if needEndRefresh then
+        UIManager:setDirty(widget, "full")
+    end
+end
+
+local time = require("ui/time")
+
+local DRAG_INTERVAL = 0.25
+local last_drag_refresh = time.now() - time.s(DRAG_INTERVAL)
+
+local function dragDirty(widget)
+    if not needEndRefresh then
+        UIManager:setDirty(widget, "ui")
+        return
+    end
+    -- 老 Kindle 上 ui/partial/flashpartial 都压不住整屏极性交替；
+    -- 只有 full 能可靠重置波形。做节流，避免每个触摸事件都全刷。
+    local now = time.now()
+    if time.to_s(now - last_drag_refresh) < DRAG_INTERVAL then return end
+    last_drag_refresh = now
+    UIManager:setDirty(widget, "full")
+end
+
 local Picker = Modal:extend{
     name = "moonbeautify_focus_picker",
     covers_fullscreen = true,
@@ -141,6 +169,11 @@ function Picker:rebuildImage()
     local dw = math.max(1, math.floor(self.iw * scale))
     local dh = math.max(1, math.floor(self.ih * scale))
     local ok, layer = pcall(function()
+        if needEndRefresh then
+            -- 老 Kindle 上 bg 的跨类型 blit 回退会把透明区画成黑块；
+            -- deco 先规范化成 BB8A 再混合，和花边图走的是同一条安全路径。
+            return require("moonbeautify.deco").frame(self.path, dw, dh, "fill")
+        end
         return require("moonbeautify.bg").layer(self.path, dw, dh, "stretch", nil)
     end)
     self.layer = ok and layer or nil
@@ -315,7 +348,7 @@ function Picker:onPickTouch(_arg, ges)
             fw = self.focus.w, fh = self.focus.h }
     end
     self.touching = true
-    UIManager:setDirty(self, "ui")
+    dragDirty(self)
     return true
 end
 
@@ -346,13 +379,14 @@ function Picker:onPickPan(_arg, ges)
         ny = clamp(ny, 0, 1 - nh)
         f.x, f.y, f.w, f.h = nx, ny, math.min(nw, 1 - nx), math.min(nh, 1 - ny)
     end
-    UIManager:setDirty(self, "ui")
+    dragDirty(self)
     return true
 end
 
 function Picker:onPickRelease(_arg, ges)
     if self.touching then self.touching = false end
     self.drag = nil
+    endRefresh(self)
     return true
 end
 
@@ -364,7 +398,8 @@ function Picker:zoomBy(dir)
         -- 缩放改变了图片显示矩形，进行中的拖拽基准已失效，取消它避免选区跳位
         self.touching, self.drag, self.drag_start = false, nil, nil
         self:rebuildImage()
-        UIManager:setDirty(self, "ui")
+        dragDirty(self)
+        endRefresh(self)
     end
 end
 
@@ -376,7 +411,8 @@ function Picker:onPickPinch(_arg, ges)
     -- 缩放改变了图片显示矩形，取消进行中的拖拽，避免松手时选区跳位
     self.touching, self.drag, self.drag_start = false, nil, nil
     self:rebuildImage()
-    UIManager:setDirty(self, "ui")
+    dragDirty(self)
+    endRefresh(self)
     return true
 end
 

@@ -16,10 +16,13 @@
   <p>ring      string  吧唧光环："double"（双线，缺省 true 同此）
   tab_icons    table   tab.id → 图片绝对路径，替换底栏图标
   widget_bg    table   组件 id → { src = 背景图绝对路径, veil = 0-100 内容提亮 }
-  widget_lace  table   组件花边：组件 id → 路径字符串（旧）或 { src = 透明 PNG 路径, fit = stretch|fill|fit }；
-                       all = 全部组件统一花边，组件 id 可覆盖（false/空 = 关）
-  widget_lace_fit  —   花边填充方式已并入 widget_lace 的表中，不再单独占键
+  widget_lace  table   组件顶层图：组件 id → 路径字符串（旧）或 { src = 图片路径, focus = { x, y, w, h } }；
+                       显示方式与组件背景一致，统一按取景选区；透明 PNG 保留镂空，普通图片整张盖住组件；
+                       false/空 = 关；旧 fit 字段仅兼容读取，不再提供入口
+  widget_lace_fit  —   已废弃，不再单独占键
   rows         table   并排组合：{ { 组件id, 组件id }, ... }，同一页的同组成员合成一行
+  ime_bg       table   输入法键盘背景：{ src = 图片绝对路径, veil = 0-100 内容提亮,
+                       focus = { x, y, w, h } 取景选区, key_alpha = 0-100 按键透明度 }
   last_dir     string  上一次选图用过的目录；没单独配路径的选图器都从这里打开（与界面壁纸共用）
 
 @module moonbeautify.store
@@ -33,7 +36,12 @@ local Store = { ID = ID }
 
 --- 扩展配置表（月读保证同一张表，改完调 save() 落盘）
 function Store.conf()
-    return Settings.getSource(ID)
+    local conf = Settings.getSource(ID)
+    if conf.part_tags ~= nil then
+        conf.part_tags = nil   -- 标签功能已移除，顺手清掉旧数据
+        Settings.saveSource(ID)
+    end
+    return conf
 end
 
 function Store.save()

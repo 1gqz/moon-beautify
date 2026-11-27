@@ -34,7 +34,7 @@ function Stack:paintTo(bb, x, y)
         bb:lightenRect(x, y, self.dimen.w, self.dimen.h, self.veil / 100)
     end
     if self[2] then self[2]:paintTo(bb, x, y) end
-    -- 花边画在最上面：只有边框有墨，中间镂空不挡内容
+    -- 花边画在最上面：透明处透出内容，不透明处盖住内容
     if self.lace then self.lace:paintTo(bb, x, y) end
 end
 
@@ -188,21 +188,19 @@ function View.badge(w, h, prefix)
     return mount(w, h, slots, widget)
 end
 
---- 给任意组件内容套一层背景图 / 边框 / 花边（补丁用）。src 可以为空（只加边框或花边）。
+--- 给任意组件内容套一层背景图 / 顶层图（补丁用）。src 可以为空（只加顶层图或内边距）。
 ---@param w number
 ---@param h number
 ---@param src string|nil 背景图绝对路径
 ---@param veil number 0-100 提亮比例，越大内容越清楚
 ---@param inner table 组件内容
----@param lace string|nil 花边（带透明通道的 PNG，画在内容之上）
----@param fit string|nil 背景填充方式：stretch / fill / fit / tile
----@param laceFit string|nil 花边填充方式：stretch / fill / fit
----@param anchor table|nil 背景 fill 的取景焦点 { x, y }
----@param laceAnchor table|nil 花边 fill 的取景焦点 { x, y }
----@param focus table|nil 背景选区 { x, y, w, h }，给出时优先于 fit/anchor
----@param laceFocus table|nil 花边选区 { x, y, w, h }
+---@param lace string|nil 顶层图片（透明 PNG 保留镂空，普通图片整张覆盖）
+---@param fit string|nil 背景填充方式（兼容旧配置，当前背景按取景铺满）
+---@param anchor table|nil 背景取景焦点 { x, y }
+---@param focus table|nil 背景选区 { x, y, w, h }
+---@param laceFocus table|nil 顶层图选区 { x, y, w, h }
 ---@return table
-function View.background(w, h, src, veil, inner, lace, fit, laceFit, anchor, laceAnchor, focus, laceFocus)
+function View.background(w, h, src, veil, inner, lace, fit, anchor, focus, laceFocus)
     local stack = Stack:new{ dimen = Geom:new{ w = w, h = h } }
     if type(src) == "string" and src ~= "" then
         stack[1] = require("moonbeautify.bg").layer(src, w, h, fit, anchor, focus)
@@ -210,7 +208,7 @@ function View.background(w, h, src, veil, inner, lace, fit, laceFit, anchor, lac
     stack[2] = inner
     stack.veil = veil
     if type(lace) == "string" and lace ~= "" then
-        stack.lace = require("moonbeautify.deco").frame(lace, w, h, laceFit, laceAnchor, laceFocus)
+        stack.lace = require("moonbeautify.deco").frame(lace, w, h, laceFocus)
     end
     return stack
 end
