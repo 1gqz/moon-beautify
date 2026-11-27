@@ -22,21 +22,4 @@ Fit.LABEL = {
     tile = "平铺重复",
 }
 
---- 唯一展示的顺序。
-Fit.ORDER = { "fill" }
-
---- 设置页选项：统一只有「填满裁边」。
----@param with_tile boolean|nil 兼容旧调用，忽略
----@return string[]
-function Fit.modes(with_tile)
-    return { "fill" }
-end
-
---- 是否允许改取景选区：填满裁边始终可以。
----@param mode string|nil
----@return boolean
-function Fit.needsAnchor(mode)
-    return true
-end
-
 return Fit

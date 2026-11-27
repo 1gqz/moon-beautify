@@ -19,15 +19,8 @@ local Slots = {}
 --- 当前显示哪几格：并排时半宽，只留中间两列（上 2、3 / 下 6、7）；满宽时 1–8 全显示
 ---@return number[]
 function Slots.indices()
-    local ok, Rows = pcall(require, "moonbeautify.rows")
-    if ok and Rows.dense then return { 2, 3, 6, 7 } end
+    if require("moonbeautify.rows").dense then return { 2, 3, 6, 7 } end
     return { 1, 2, 3, 4, 5, 6, 7, 8 }
-end
-
---- 并排时会被藏起来的四角格
----@return number[]
-function Slots.hidden()
-    return { 1, 4, 5, 8 }
 end
 
 local function blank(w, h)

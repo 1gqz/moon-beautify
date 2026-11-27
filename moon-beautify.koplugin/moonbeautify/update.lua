@@ -97,9 +97,7 @@ end
 --- 自动检查开关（扩展设置页里的「自动检查更新」，缺省开）
 ---@return boolean
 function Update.autoEnabled()
-    local ok, Store = pcall(require, "moonbeautify.store")
-    if not ok then return true end
-    return Store.conf().update_auto ~= false
+    return require("moonbeautify.store").conf().update_auto ~= false
 end
 
 ---@param on boolean
@@ -107,11 +105,6 @@ function Update.setAuto(on)
     local Store = require("moonbeautify.store")
     Store.conf().update_auto = on and true or false
     Store.save()
-end
-
----@return string|nil root 插件根目录
-function Update.root()
-    return pluginRoot()
 end
 
 --- 手动检查：设置页那一行
@@ -133,8 +126,7 @@ end
 function Update.autoCheck()
     if os.time() - (Update._checked_at or 0) < 60 then return end
     Update._checked_at = os.time()
-    local ok_conf, Store = pcall(require, "moonbeautify.store")
-    if not ok_conf then return end
+    local Store = require("moonbeautify.store")
     local conf = Store.conf()
     if os.time() - (tonumber(conf.update_checked_at) or 0) < CHECK_INTERVAL then return end
     if not Update.autoEnabled() then return end

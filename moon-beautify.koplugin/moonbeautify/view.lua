@@ -137,11 +137,6 @@ end
 --- 尺寸档位 → 吧唧边长占可用短边的比例
 local SIZE_SCALE = { s = 0.60, m = 0.80, l = 1.00 }
 
---- 吧唧：拟真（圆/圆角/直角 + 倒角 / 侧影 / 高光 / 特效 / 叠加素材 / 慢转）+ 贴图条
----@param w number
----@param h number
----@param prefix string|nil 配置前缀，缺省 "badge_"
----@return table
 --- 读选区配置：{ x, y, w, h }（0..1）。非法或缺省返回 nil。
 ---@param value any
 ---@return table|nil
@@ -154,6 +149,11 @@ function View.focusOf(value)
     return { x = x, y = y, w = w, h = h }
 end
 
+--- 吧唧：拟真（圆/圆角/直角 + 倒角 / 侧影 / 高光 / 特效 / 叠加素材 / 慢转）+ 贴图条
+---@param w number
+---@param h number
+---@param prefix string|nil 配置前缀，缺省 "badge_"
+---@return table
 function View.badge(w, h, prefix)
     prefix = prefix or "badge_"
     local conf = Store.conf()

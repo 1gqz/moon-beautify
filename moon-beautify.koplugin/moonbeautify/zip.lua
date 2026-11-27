@@ -69,8 +69,8 @@ function Zip.write(zipPath, files)
     local locals, centrals = {}, {}
     local offset = 0
     for _i, f in ipairs(files) do
-        local name = tostring(f.name):gsub("\\", "/")
-        local data = tostring(f.data or "")
+        local name = f.name:gsub("\\", "/")
+        local data = f.data or ""
         local crc = crc32(data)
         local size = #data
         local local_header = "PK\x03\x04" .. u16(20) .. u16(0) .. u16(0)
@@ -88,8 +88,9 @@ function Zip.write(zipPath, files)
     local blob = table.concat(locals) .. central .. eocd
     local file, err = io.open(zipPath, "wb")
     if not file then return false, err or "打不开文件" end
-    file:write(blob)
-    file:close()
+    local wok = file:write(blob)
+    local cok = file:close()
+    if not (wok and cok) then return false, "写入 zip 失败" end
     return true
 end
 

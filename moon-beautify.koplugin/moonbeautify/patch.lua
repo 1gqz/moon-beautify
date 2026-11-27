@@ -37,7 +37,6 @@ local installed = false
 local function isImagePath(name)
     return type(name) == "string" and name:find("/", 1, true) ~= nil and ImageUtil.suffix(name) ~= nil
 end
-Patch.isImagePath = isImagePath
 
 --- 图标槽换成图片：方盒居中，保比例。
 ---@param path string
@@ -222,7 +221,6 @@ local function decorate(self, widget)
     if ok and wrapped then return wrapped end
     return widget
 end
-Patch.decorate = decorate
 
 local function patchHome()
     local Base = require("desktop.pages.home.base")
@@ -257,13 +255,13 @@ local function patchHome()
         return slot
     end
 
-    local origRefresh = Base.refresh
+    -- 整体替换 refresh：重建内容后重新套装饰
     Base.refresh = function(self)
         local slot = self.slot
         if not slot then return end
         local old = slot[1]
         slot[1] = decorate(self, self:createWidget())
-        old:free()
+        if old then old:free() end
         self:dirty()
     end
 end
@@ -333,21 +331,12 @@ local function patchKeyboard()
     if VK._beautify_ime_bg then return end
     VK._beautify_ime_bg = true
 
-    -- 关掉按键点击闪烁：invert() 会画出 focus 高亮（白格子），并在 e-ink 上
-    -- 经 yieldToEPDC 保持那一帧，导致"按完格子发白"。关掉后 onTapSelect 走
-    -- else 分支不做 invert，透明格子保持稳定。仅在配置了键盘背景时改动。
-    pcall(function()
-        local item = Store.conf().ime_bg
-        if type(item) == "table" and type(item.src) == "string" and item.src ~= "" and _G.G_reader_settings then
-            _G.G_reader_settings:makeFalse("flash_keyboard")
-        end
-    end)
-
     local orig_addKeys = VK.addKeys
     VK.addKeys = function(self, ...)
         orig_addKeys(self, ...)
-        -- 兜底：按键刚在 orig_addKeys 里创建（已按旧设置读入 flash_keyboard），
-        -- 有键盘背景时逐个关掉点击闪烁，避免 invert 高亮帧把格子涂白。
+        -- 关掉按键点击闪烁：invert() 会画出 focus 高亮（白格子），并在 e-ink 上
+        -- 经 yieldToEPDC 保持那一帧，导致"按完格子发白"。只在有键盘背景时逐个按键关，
+        -- 不改 KOReader 全局的 flash_keyboard 设置（移除背景后用户原设置照常生效）。
         pcall(function()
             local item = Store.conf().ime_bg
             if type(item) == "table" and type(item.src) == "string" and item.src ~= "" then
@@ -436,9 +425,9 @@ function Patch.install()
     if installed then return end
     installed = true
     for _idx, fn in ipairs({ patchIcon, patchTabbar, patchHome, patchRows, patchPicker, patchKeyboard }) do
-        local ok = pcall(fn)
+        local ok, err = pcall(fn)
         if not ok then
-            pcall(function() require("utils.log").error("moonbeautify patch failed") end)
+            pcall(function() require("utils.log").error("moonbeautify patch failed:", tostring(err)) end)
         end
     end
 end

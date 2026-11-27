@@ -25,6 +25,9 @@ local Settings = {}
 --- 选完设置重画首页（桌面还在就整屏刷一次）
 ---@param desktop table|nil
 local function repaint(desktop)
+    -- 换图/换尺寸后旧的解码结果不会再命中，清掉让缓存不随设置次数无限增长
+    require("moonbeautify.bg").clear()
+    require("moonbeautify.deco").clear()
     if not desktop then return end
     pcall(function() desktop:updateView() end)
     -- desktop:updateView 里已顺带重刷设置页；这里标全屏让整条 window stack 一起重画
@@ -93,7 +96,8 @@ end
 ---@param on_select fun(value: any)
 local function choose(title, items, current, on_select)
     local makeItems = type(items) == "function" and items or nil
-    local dlg = List:new{
+    local dlg
+    dlg = List:new{
         title = title,
         items = makeItems and makeItems() or items,
         current = current,
@@ -121,11 +125,8 @@ local function chooseFocus(path, focus, apply, desktop)
     -- 全屏 Picker 关闭时 UIManager 会自动重绘它下面露出的窗口。
     -- 若设置叠还压在下面，就会被画出来（表现为"确定后又弹出拓展/设置页"）。
     -- 所以开窗前先关掉整条设置叠链，让 Picker 下面是桌面。
-    if desktop then
-        local okov, Overlay = pcall(require, "desktop.pages.setting.overlay")
-        if okov and Overlay and Overlay.closeAll then
-            pcall(Overlay.closeAll, desktop)
-        end
+    if desktop and Overlay.closeAll then
+        pcall(Overlay.closeAll, desktop)
     end
     require("moonbeautify.focus_picker"):new{
         path = type(path) == "string" and path ~= "" and path or nil,
@@ -317,7 +318,7 @@ end
 ---@return string
 local function ringText(conf, prefix)
     local v = conf[prefix .. "ring"]
-    if v == true then return _("珠链") end
+    if v == true then return _("双线") end
     if type(v) == "string" and v ~= "" then
         return _(require("moonbeautify.badge").RING_LABEL[v] or _("未设置"))
     end
@@ -460,7 +461,6 @@ local function frameSettings(desktop, prefix)
                 { value = "stack", text = _("多图堆叠（方块窗，左右滑动翻页）") },
             }, view, function(v)
                 put(desktop, prefix .. "view", v)
-                require("moonbeautify.frame").reset(prefix)
             end)
         elseif value == "src" then
             srcPage(desktop, prefix, title .. _("图片"))
@@ -475,7 +475,6 @@ local function frameSettings(desktop, prefix)
                 applyFocusPrefixed(conf, prefix, v)
                 Store.save()
                 -- 不 repaint(desktop)：避免全屏选区关闭后重建叠层导致拓展/设置页重现
-                require("moonbeautify.frame").reset(prefix)
             end, desktop)
         end
     end)
@@ -1043,17 +1042,25 @@ local function themePartItem(desktop, part)
             end
         elseif v == "copy" then
             pickPath(desktop, nil, false, function(dir)
-                local newConf, files = PartCopy.copyTo(part.conf, dir)
+                local newConf, files, failed = PartCopy.copyTo(part.conf, dir)
                 if #files == 0 then
-                    themeToast(_("没有可复制的图片"))
+                    themeToast(failed > 0 and _("复制失败，请检查目标文件夹是否可写")
+                        or _("没有可复制的图片"))
                     return
                 end
                 PartCopy.apply(part, newConf)
-                Theme.updatePartConf(part.theme, part.slot, newConf)
+                local ok, err = Theme.updatePartConf(part.theme, part.slot, newConf)
                 repaint(desktop)
                 refreshThemePage(desktop)
-                themeToast(T(_("已复制 %1 项图片到 %2，之后可以删除原主题包"),
-                    tostring(#files), dir), 5)
+                if not ok then
+                    themeToast(T(_("图片已复制，但主题存档没改成：%1"), err or ""), 5)
+                elseif failed > 0 then
+                    themeToast(T(_("已复制 %1 项，%2 项失败（保留原路径）"),
+                        tostring(#files), tostring(failed)), 5)
+                else
+                    themeToast(T(_("已复制 %1 项图片到 %2，之后可以删除原主题包"),
+                        tostring(#files), dir), 5)
+                end
             end)
         elseif v == "delete" then
             choose(_("确认删除部件"), {
@@ -1389,7 +1396,7 @@ local function themeItem(desktop, name, active)
             elseif err == "beautify_in_use" then
                 themeToast(_("应用中删除失败，请先应用其他主题"))
             else
-                themeToast(T(_("应用中删除失败，%1"), err or _("主题目录删不掉")))
+                themeToast(T(_("删除失败：%1"), err or _("主题目录删不掉")))
             end
         end
     end)

@@ -26,7 +26,7 @@ local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 
 local Effects = require("moonbeautify.effects")
-local Fit = require("moonbeautify.fit")
+local nativeSize = require("moonbeautify.bg").nativeSize
 
 local C8 = Blitbuffer.Color8
 
@@ -47,7 +47,6 @@ local function cornerOf(shape, d)
     if shape == "round" then return math.max(2, d * 0.16) end
     return 0
 end
-Badge.cornerOf = cornerOf
 
 --- 圆角矩形的有符号距离（<= 0 在内部）
 ---@param w number
@@ -78,17 +77,15 @@ end
 
 --- 把用户素材按 alpha 叠上去（只叠在形状内）
 ---@param bb table 目标
+---@param obb table|nil 已解码到 w×h 的素材
 ---@param w number 素材（也就是吧唧本体）边长
 ---@param h number
----@param path string|nil
 ---@param rc number 圆角半径：素材也跟着裁成同样的形状
 ---@param ox number|nil 吧唧本体在目标位图里的横向偏移（开外圈/装饰时本体往里缩）
 ---@param oy number|nil 纵向偏移
-local function blendOverlay(bb, w, h, path, rc, ox, oy)
-    if type(path) ~= "string" or path == "" then return end
-    ox, oy = ox or 0, oy or 0
-    local obb = RenderImage:renderImageFile(path, false, w, h)
+local function blendOverlay(bb, obb, w, h, rc, ox, oy)
     if not obb then return end
+    ox, oy = ox or 0, oy or 0
     for y = 0, h - 1 do
         for x = 0, w - 1 do
             if sdf(w, h, rc, x, y) <= 0 then
@@ -186,16 +183,15 @@ end
 
 --- 底图：照片（可旋转）+ 倒角 + 侧影 + 叠加素材 + 光环
 --- 用 BB8A：没画到的角落 alpha=0，paintTo 用 alphablitFrom 时透出壁纸
----@param sbb table 已经缩放到 w×h 的源图（静态图或动图的某一帧）
+---@param sbb table 已经缩放到 w×h 的源图（静态图或动图的某一帧，由调用方持有）
 ---@param w number
 ---@param h number
 ---@param angle number 弧度
----@param overlay string|nil
+---@param overlayOf fun(di: number): table|nil 取已解码到 di×di 的叠加素材
 ---@param shape string
 ---@param ring string|boolean|nil 光环开关
----@param own boolean|nil 是否要在算完后释放 sbb（静态图每次新建，动图帧是复用的）
 ---@return table|nil, number 位图, 本体边长
-local function plateBase(sbb, w, h, angle, overlay, shape, ring, own)
+local function plateBase(sbb, w, h, angle, overlayOf, shape, ring)
     if not sbb then return nil end
 
     -- 开了光环时本体往里缩，让出一圈空间
@@ -238,9 +234,8 @@ local function plateBase(sbb, w, h, angle, overlay, shape, ring, own)
         end
     end
 
-    blendOverlay(bb, di, di, overlay, rc, margin, margin)
+    blendOverlay(bb, overlayOf(di), di, di, rc, margin, margin)
     if ring then paintRing(bb, w, h, di, margin, shape) end
-    if own then pcall(function() sbb:free() end) end
     return bb, di
 end
 
@@ -290,25 +285,14 @@ function Painted:free()
         pcall(function() self.frames:free() end)
         self.frames = nil
     end
-end
-
-
-
--- 原图尺寸缓存（重算底图时不用反复解码原尺寸）
-local native = {}
-
---- 读原图尺寸（只解一次，解完立刻释放）
----@param path string
----@return number|nil, number|nil
-local function nativeSize(path)
-    local hit = native[path]
-    if hit then return hit[1], hit[2] end
-    local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
-    if not ok or not bb then return nil, nil end
-    local w, h = bb:getWidth(), bb:getHeight()
-    bb:free()
-    native[path] = { w, h }
-    return w, h
+    if self.src_bb then
+        self.src_bb:free()
+        self.src_bb = nil
+    end
+    if self.overlay_bb then
+        self.overlay_bb:free()
+    end
+    self.overlay_bb = nil
 end
 
 --- 按填充方式算出「要渲染多大」，与背景/花边/相框共用同一套规则
@@ -396,7 +380,7 @@ end
 
 --- 取当前该用的源图：动图取当前帧（解过的留着复用），静态图现解一张
 ---@param widget table
----@return table|nil bb, boolean own
+---@return table|nil bb 由 widget 持有（frame_bbs / src_bb），调用方不要释放
 local function sourceOf(widget)
     local w, h = widget.dimen.w, widget.dimen.h
     -- 统一只用「填满裁边」
@@ -427,8 +411,10 @@ local function sourceOf(widget)
                 cache[i] = bb
             end
         end
-        return bb, false
+        return bb
     end
+    -- 静态图摆好后留在 widget 上：转动时每个节拍都要重算底图，不能每次重新解码原图
+    if widget.src_bb then return widget.src_bb end
     local iw, ih = nativeSize(widget.src)
     local sw, sh = w, h
     if iw and ih and iw > 0 and ih > 0 then
@@ -448,7 +434,21 @@ local function sourceOf(widget)
     end
     local ok, decoded = pcall(function() return RenderImage:renderImageFile(widget.src, false, sw, sh) end)
     if not ok or not decoded then return nil end
-    return place(decoded, w, h, mode, ax, ay, focus), true
+    widget.src_bb = place(decoded, w, h, mode, ax, ay, focus)
+    return widget.src_bb
+end
+
+--- 叠加素材按本体边长解码一次，留在 widget 上复用；解不出记 false，不再重试
+---@param widget table
+---@param di number 本体边长
+---@return table|nil
+local function overlayOf(widget, di)
+    local path = widget.overlay
+    if type(path) ~= "string" or path == "" then return nil end
+    if widget.overlay_bb == nil then
+        widget.overlay_bb = RenderImage:renderImageFile(path, false, di, di) or false
+    end
+    return widget.overlay_bb or nil
 end
 
 --- 重算底图（角度或帧变了才真的算）
@@ -456,10 +456,10 @@ local function ensureBase(widget)
     local angle = widget.angle or 0
     local frame = widget.frames and (widget.frame or 1) or 0
     if widget.base and widget.base_angle == angle and (widget.base_frame or 0) == frame then return true end
-    local sbb, own = sourceOf(widget)
+    local sbb = sourceOf(widget)
     if not sbb then return false end
     local base, inner = plateBase(sbb, widget.dimen.w, widget.dimen.h, angle,
-        widget.overlay, widget.shape, widget.ring, own)
+        function(di) return overlayOf(widget, di) end, widget.shape, widget.ring)
     if not base then return false end
     if widget.base then pcall(function() widget.base:free() end) end
     widget.base, widget.base_angle, widget.inner, widget.base_frame = base, angle, inner, frame

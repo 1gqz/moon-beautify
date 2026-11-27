@@ -16,17 +16,10 @@ local Blitbuffer = require("ffi/blitbuffer")
 local RenderImage = require("ui/renderimage")
 local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
+local nativeSize = require("moonbeautify.bg").nativeSize
 
 local C8A = Blitbuffer.Color8A
 local Tilt = {}
-
--- 失败诊断（只在失败时写一行，成功不写，不影响性能）
-local function diag(msg)
-    pcall(function()
-        local f = io.open("/mnt/us/tilt_diag.log", "a")
-        if f then f:write(tostring(msg) .. "\n"); f:close() end
-    end)
-end
 
 -- 强引用缓存 + FIFO 淘汰：条目有限（张数 × 角度档位），翻几轮后稳定命中
 local cache = {}
@@ -48,7 +41,11 @@ end
 --- 做法：对每个目标像素做逆透视映射回源图坐标（一次循环完成 fit 缩放 + 透视）。
 --- 像素访问沿用 badge.lua 验证过的 dec:getPixel():getColor8().a。
 local function build(path, s, angle)
-    local ok, dec = pcall(function() return RenderImage:renderImageFile(path, false) end)
+    local iw0, ih0 = nativeSize(path)
+    if not iw0 or iw0 < 1 or ih0 < 1 then return nil end
+    local k = math.min(s / iw0, s / ih0)
+    local dw, dh = math.max(1, math.ceil(iw0 * k)), math.max(1, math.ceil(ih0 * k))
+    local ok, dec = pcall(function() return RenderImage:renderImageFile(path, false, dw, dh) end)
     if not ok or not dec then return nil end
     local iw, ih = dec:getWidth(), dec:getHeight()
     if iw < 1 or ih < 1 then pcall(function() dec:free() end); return nil end
@@ -107,18 +104,9 @@ function Tilt.frame(path, s, angle)
         return Tilted:new{ dimen = Geom:new{ w = s, h = s }, buf = hit }
     end
     local ok, buf = pcall(build, path, s, aq * math.pi / 180)
-    if not ok or not buf then
-        diag("FAIL path=" .. tostring(path) .. " s=" .. tostring(s) .. " err=" .. tostring(buf))
-        return nil
-    end
-    diag("OK path=" .. tostring(path) .. " s=" .. tostring(s) .. " angle=" .. tostring(aq))
+    if not ok or not buf then return nil end
     cachePut(key, buf)
     return Tilted:new{ dimen = Geom:new{ w = s, h = s }, buf = buf }
-end
-
-function Tilt.clear()
-    cache = {}
-    order = {}
 end
 
 return Tilt

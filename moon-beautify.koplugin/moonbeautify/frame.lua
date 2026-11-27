@@ -184,7 +184,4 @@ function Frame.build(w, h, prefix)
     return host
 end
 
---- 设置页改了配置后调用；纯展示无需状态，保留空实现兼容调用方。
-function Frame.reset(_prefix) end
-
 return Frame

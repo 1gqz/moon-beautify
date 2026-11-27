@@ -22,9 +22,6 @@ local SLOTS = {
     { slot = "frame2",     type = "frame",     label = "相框 2",   prefix = { "frame2_" } },
     { slot = "ime",        type = "ime",       label = "输入法键盘背景", exact = { "ime_bg" } },
 }
-
-M.SLOTS = SLOTS
-
 M.TYPE_LABEL = {
     icons = "底栏图标",
     badge = "吧唧",
@@ -112,6 +109,7 @@ local function copy(value)
     for k, v in pairs(value) do out[k] = copy(v) end
     return out
 end
+M.copy = copy
 
 local function deepEqual(a, b)
     if type(a) ~= type(b) then return false end
@@ -124,6 +122,11 @@ local function deepEqual(a, b)
     end
     return true
 end
+
+--- 组件部件负责的按组件 id 分片的配置表
+local COMP_KEYS = { "widget_bg", "widget_lace", "widget_pad", "widget_border" }
+local COMP_KEY_SET = {}
+for _, key in ipairs(COMP_KEYS) do COMP_KEY_SET[key] = true end
 
 local function compIdOfSlot(slot)
     if type(slot) ~= "string" then return nil end
@@ -165,7 +168,7 @@ function M.extract(conf, slot)
     if type(conf) ~= "table" then return out end
     local comp_id = compIdOfSlot(slot)
     if comp_id then
-        for _, key in ipairs({ "widget_bg", "widget_lace", "widget_pad", "widget_border" }) do
+        for _, key in ipairs(COMP_KEYS) do
             -- 通用背景/花边已废弃，不能从旧配置里捞回 comp_all
             if not (comp_id == "all" and (key == "widget_bg" or key == "widget_lace")) then
                 local map = conf[key]
@@ -201,7 +204,7 @@ function M.clear(conf, slot)
     if type(conf) ~= "table" then return end
     local comp_id = compIdOfSlot(slot)
     if comp_id then
-        for _, key in ipairs({ "widget_bg", "widget_lace", "widget_pad", "widget_border" }) do
+        for _, key in ipairs(COMP_KEYS) do
             local map = conf[key]
             if type(map) == "table" and map[comp_id] ~= nil then
                 map[comp_id] = nil
@@ -227,12 +230,24 @@ function M.clear(conf, slot)
     end
 end
 
---- 把 part.conf 合并进配置（只覆盖它负责的键）
+--- 把 part.conf 合并进配置（只覆盖它负责的键）。
+--- 组件部件的 widget_* 表与 rows 由多个组件共享，只能按组件 id 写入分片、按行追加。
 function M.merge(conf, partConf, slot)
     if type(conf) ~= "table" or type(partConf) ~= "table" then return end
     M.clear(conf, slot)
+    local comp = compIdOfSlot(slot) ~= nil
     for k, v in pairs(partConf) do
-        if not M.LOCAL_KEYS[k] then conf[k] = copy(v) end
+        if M.LOCAL_KEYS[k] then
+            -- 部件库状态不属于任何部件
+        elseif comp and k == "rows" and type(v) == "table" then
+            conf.rows = type(conf.rows) == "table" and conf.rows or {}
+            for _, row in ipairs(v) do conf.rows[#conf.rows + 1] = copy(row) end
+        elseif comp and COMP_KEY_SET[k] and type(v) == "table" then
+            conf[k] = type(conf[k]) == "table" and conf[k] or {}
+            for id, item in pairs(v) do conf[k][id] = copy(item) end
+        else
+            conf[k] = copy(v)
+        end
     end
 end
 
@@ -275,7 +290,7 @@ function M.matches(conf, partConf, slot)
     if type(conf) ~= "table" then return false end
     local id = compIdOfSlot(slot)
     if id then
-        for _, key in ipairs({ "widget_bg", "widget_lace", "widget_pad", "widget_border" }) do
+        for _, key in ipairs(COMP_KEYS) do
             local want = partConf[key]
             if type(want) == "table" then
                 if type(conf[key]) ~= "table" or not deepEqual(want[id], conf[key][id]) then
@@ -326,8 +341,7 @@ function M.splitConf(conf)
     end
 
     for k, v in pairs(conf) do
-        if not M.LOCAL_KEYS[k] and k ~= "widget_bg" and k ~= "widget_lace"
-            and k ~= "widget_pad" and k ~= "widget_border" and k ~= "rows" then
+        if not M.LOCAL_KEYS[k] and not COMP_KEY_SET[k] and k ~= "rows" then
             local spec = specFor(k)
             add(spec.slot, spec.type, spec.label, { [k] = v })
         end
@@ -338,7 +352,7 @@ function M.splitConf(conf)
     local function mark(id)
         if type(id) == "string" and id ~= "" then compIds[id] = true end
     end
-    for _, key in ipairs({ "widget_bg", "widget_lace", "widget_pad", "widget_border" }) do
+    for _, key in ipairs(COMP_KEYS) do
         if type(conf[key]) == "table" then
             for id in pairs(conf[key]) do
                 -- 背景/花边的 all 已废弃：组件大小不同会变形，不再生成通用部件
@@ -387,34 +401,6 @@ function M.decorate(parts, themeName)
             or M.TYPE_LABEL[part.type] or part.slot
     end
     return parts
-end
-
-local function sortedKeys(t)
-    local keys = {}
-    for k in pairs(t or {}) do keys[#keys + 1] = tostring(k) end
-    table.sort(keys)
-    return keys
-end
-
---- 分组维度：type（部件类型）/ theme（来源主题包）
----@param parts table[] 部件列表
----@param dim string
----@return table[] { { key, label, parts = {...} }, ... }
-function M.group(parts, dim)
-    local buckets = {}
-    for _, part in ipairs(parts or {}) do
-        local key = dim == "theme" and (part.theme or "未知主题")
-            or (part.group or M.groupOfType(part.type))
-        if not buckets[key] then buckets[key] = { key = key, parts = {} } end
-        buckets[key].parts[#buckets[key].parts + 1] = part
-    end
-    local out = {}
-    for _, key in ipairs(sortedKeys(buckets)) do
-        local g = buckets[key]
-        g.label = dim == "type" and (M.TYPE_LABEL[key] or key) or key
-        out[#out + 1] = g
-    end
-    return out
 end
 
 return M

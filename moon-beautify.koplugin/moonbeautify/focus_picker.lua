@@ -20,7 +20,6 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local UIManager = require("ui/uimanager")
 local Blitbuffer = require("ffi/blitbuffer")
-local RenderImage = require("ui/renderimage")
 local Modal = require("ui.themes.widgets.modal")
 local Text = require("ui.themes.widgets.text")
 local Theme = require("ui.themes")
@@ -65,20 +64,12 @@ local Picker = Modal:extend{
 
 local MIN_W = 0.05
 local MAX_ZOOM = 4
+local MAX_DIM = 4096
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
     if v > hi then return hi end
     return v
-end
-
-local function imageSize(path)
-    local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
-    if not ok or not bb then return nil end
-    local w, h = bb:getWidth(), bb:getHeight()
-    pcall(function() bb:free() end)
-    if not w or not h or w < 1 or h < 1 then return nil end
-    return w, h
 end
 
 --- 点是否在矩形内
@@ -108,7 +99,8 @@ function Picker:init()
 
     self.iw, self.ih = nil, nil
     if type(self.path) == "string" and self.path ~= "" then
-        self.iw, self.ih = imageSize(self.path)
+        self.iw, self.ih = require("moonbeautify.bg").nativeSize(self.path)
+        if self.iw and (self.iw < 1 or self.ih < 1) then self.iw, self.ih = nil, nil end
     end
     self.zoom = 1
     self.touching = false
@@ -166,13 +158,15 @@ function Picker:rebuildImage()
     local avail_w = self.screen_w - self.margin * 2
     local avail_h = self.screen_h - self.top_h - self.bot_h
     local scale = math.min(avail_w / self.iw, avail_h / self.ih) * self.zoom
+    -- 放大到 4 倍时预览可能超过 4096 像素边长，按上限截住，避免解出巨图撑爆内存
+    scale = math.min(scale, MAX_DIM / self.iw, MAX_DIM / self.ih)
     local dw = math.max(1, math.floor(self.iw * scale))
     local dh = math.max(1, math.floor(self.ih * scale))
     local ok, layer = pcall(function()
         if needEndRefresh then
             -- 老 Kindle 上 bg 的跨类型 blit 回退会把透明区画成黑块；
             -- deco 先规范化成 BB8A 再混合，和花边图走的是同一条安全路径。
-            return require("moonbeautify.deco").frame(self.path, dw, dh, "fill")
+            return require("moonbeautify.deco").frame(self.path, dw, dh)
         end
         return require("moonbeautify.bg").layer(self.path, dw, dh, "stretch", nil)
     end)
@@ -432,6 +426,9 @@ function Picker:close()
     if self._closed then return end
     self._closed = true
     UIManager:close(self, "ui")
+    -- 每一档缩放都解码过一张预览，关窗后不再需要
+    require("moonbeautify.bg").clear()
+    require("moonbeautify.deco").clear()
 end
 
 function Picker:onSetRotationMode()

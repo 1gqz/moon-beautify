@@ -25,12 +25,7 @@ end
 local KEY_SET = {}
 for _, key in ipairs(KEYS) do KEY_SET[key] = true end
 
-local function copy(value)
-    if type(value) ~= "table" then return value end
-    local out = {}
-    for k, v in pairs(value) do out[k] = copy(v) end
-    return out
-end
+local copy = require("moonbeautify.parts").copy
 
 local function conf()
     return MoonSettings.get(ID)

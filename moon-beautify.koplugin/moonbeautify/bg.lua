@@ -52,6 +52,7 @@ local function nativeSize(path)
     native[path] = { w, h }
     return w, h
 end
+Bg.nativeSize = nativeSize
 
 --- 按模式算出「要渲染多大」和「从哪切」
 ---@param iw number 原宽
@@ -67,9 +68,6 @@ local function scaledSize(iw, ih, w, h, mode)
     elseif mode == "fit" then
         local s = math.min(w / iw, h / ih)
         return math.max(1, math.ceil(iw * s)), math.max(1, math.ceil(ih * s))
-    elseif mode == "tile" then
-        local s = w / iw
-        return w, math.max(1, math.ceil(ih * s))
     end
     return w, h
 end
@@ -165,8 +163,7 @@ function Layer:paintTo(bb, x, y)
     self.dimen.x, self.dimen.y = x, y
     local w, h = self.dimen.w, self.dimen.h
     -- 多图堆叠用 contain：整图等比缩放装进方框，居中留白、不裁切；
-    -- 其余组件仍统一「填满裁边」（旧配置 stretch/fit 也按 fill）。
-    local mode = "fill"
+    -- 其余组件统一「填满裁边」（旧配置 stretch/fit/tile 也按 fill）。
     pcall(function()
         if self.contain then
             -- 先用页面底色铺满方框，避免透明图片/留白处露出下面的图层
@@ -186,28 +183,12 @@ function Layer:paintTo(bb, x, y)
             paintFocus(bb, x, y, w, h, self.src, self.focus)
             return
         end
-        local src, sw, sh = prepared(self.src, mode, w, h)
+        local src, sw, sh = prepared(self.src, "fill", w, h)
         if not src then return end
-        if mode == "fit" then
-            blit(bb, src, x + math.floor((w - sw) / 2), y + math.floor((h - sh) / 2), 0, 0, sw, sh)
-        elseif mode == "tile" then
-            if sh >= h then
-                blit(bb, src, x, y, 0, 0, w, h)
-            else
-                local ty = 0
-                while ty < h do
-                    blit(bb, src, x, y + ty, 0, 0, w, math.min(sh, h - ty))
-                    ty = ty + sh
-                end
-            end
-        elseif mode == "fill" then
-            -- 等比放大后按锚点裁切：anchor 0=贴左/上，0.5=居中，1=贴右/下
-            local sx = math.floor((sw - w) * (self.anchor_x or 0.5))
-            local sy = math.floor((sh - h) * (self.anchor_y or 0.5))
-            blit(bb, src, x, y, sx, sy, w, h)
-        else
-            blit(bb, src, x, y, 0, 0, w, h)
-        end
+        -- 等比放大后按锚点裁切：anchor 0=贴左/上，0.5=居中，1=贴右/下
+        local sx = math.floor((sw - w) * (self.anchor_x or 0.5))
+        local sy = math.floor((sh - h) * (self.anchor_y or 0.5))
+        blit(bb, src, x, y, sx, sy, w, h)
     end)
 end
 

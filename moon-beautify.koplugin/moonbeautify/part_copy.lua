@@ -9,12 +9,7 @@ local M = {}
 
 local IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true, bmp = true }
 
-local function copy(value)
-    if type(value) ~= "table" then return value end
-    local out = {}
-    for k, v in pairs(value) do out[k] = copy(v) end
-    return out
-end
+local copy = Parts.copy
 
 local function walk(value, fn)
     if type(value) ~= "table" then return value end
@@ -113,25 +108,26 @@ local function copyFile(src, dst)
     if not data then return false end
     local o = io.open(dst, "wb")
     if not o then return false end
-    o:write(data)
-    o:close()
-    return true
+    local wok = o:write(data)
+    local cok = o:close()
+    return (wok and cok) and true or false
 end
 
 local function copyDir(src, dst)
     if lfs.attributes(dst, "mode") ~= "directory" and not lfs.mkdir(dst) then return false end
+    local ok = true
     for name in lfs.dir(src) do
         if name ~= "." and name ~= ".." then
             local s, d = src .. "/" .. name, dst .. "/" .. name
             local mode = lfs.attributes(s, "mode")
             if mode == "directory" then
-                copyDir(s, d)
+                ok = copyDir(s, d) and ok
             elseif mode == "file" then
-                copyFile(s, d)
+                ok = copyFile(s, d) and ok
             end
         end
     end
-    return true
+    return ok
 end
 
 local function uniqueName(used, base)
@@ -158,28 +154,34 @@ local function destNameFor(used, targetDir, base, src, isDir)
     return uniqueName(used, base)
 end
 
---- 把 part.conf 里的图片复制到 targetDir，返回改写后的配置和文件名列表
+--- 把 part.conf 里的图片复制到 targetDir，返回改写后的配置、文件名列表和失败数。
+--- 复制失败的图片保留原路径，不能把配置指到不存在的文件。
 ---@param conf table
 ---@param targetDir string
----@return table newConf, string[] files
+---@return table newConf, string[] files, integer failed
 function M.copyTo(conf, targetDir)
     local newConf = copy(conf) or {}
     if lfs.attributes(targetDir, "mode") ~= "directory" then lfs.mkdir(targetDir) end
-    local used, repl, files = usedNames(targetDir), {}, {}
+    local used, repl, files, failed = usedNames(targetDir), {}, {}, 0
     for _, item in ipairs(M.images(newConf)) do
         local base = item.path:match("([^/\\]+)$") or "image"
         local name = destNameFor(used, targetDir, base, item.path, item.dir)
         local dest = targetDir .. "/" .. name
+        local ok = true
         if item.dir then
-            if lfs.attributes(dest, "mode") ~= "directory" then copyDir(item.path, dest) end
+            if lfs.attributes(dest, "mode") ~= "directory" then ok = copyDir(item.path, dest) end
         elseif lfs.attributes(dest, "mode") ~= "file" then
-            copyFile(item.path, dest)
+            ok = copyFile(item.path, dest)
         end
-        files[#files + 1] = name
-        repl[item.path] = dest
+        if ok then
+            files[#files + 1] = name
+            repl[item.path] = dest
+        else
+            failed = failed + 1
+        end
     end
     walk(newConf, function(s) return repl[s] or s end)
-    return newConf, files
+    return newConf, files, failed
 end
 
 --- 把改写后的配置落到当前设置（原生部件走各自数据层，其余合并回 ext.beautify）

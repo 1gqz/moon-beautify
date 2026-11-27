@@ -37,12 +37,7 @@ else
     for _, key in ipairs(FALLBACK_KEYS) do addKey(key) end
 end
 
-local function copy(value)
-    if type(value) ~= "table" then return value end
-    local out = {}
-    for k, v in pairs(value) do out[k] = copy(v) end
-    return out
-end
+local copy = require("moonbeautify.parts").copy
 
 local function conf()
     local ok, c = pcall(MoonSettings.get, ID)

@@ -13,26 +13,12 @@ local RenderImage = require("ui/renderimage")
 local Widget = require("ui/widget/widget")
 local Geom = require("ui/geometry")
 
+local nativeSize = require("moonbeautify.bg").nativeSize
+
 local Deco = {}
 
 -- 渲染缓存：素材不算大，强引用即可（一张 400x300 BB8A 约 240KB）
 local cache = {}
--- 原图尺寸缓存
-local native = {}
-
---- 读原图尺寸（只解一次，解完立刻释放）
----@param path string
----@return number|nil, number|nil
-local function nativeSize(path)
-    local hit = native[path]
-    if hit then return hit[1], hit[2] end
-    local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
-    if not ok or not bb then return nil, nil end
-    local w, h = bb:getWidth(), bb:getHeight()
-    bb:free()
-    native[path] = { w, h }
-    return w, h
-end
 
 --- 把解码出的 bb 规范化成 BB8A（统一带透明通道）。
 --- MuPDF 解码 RGBA PNG 得到的是预乘 BBRGB32，blitFrom 对它是直接拷贝
@@ -169,7 +155,6 @@ function Deco.clear()
         pcall(function() v:free() end)
     end
     cache = {}
-    native = {}
 end
 
 return Deco

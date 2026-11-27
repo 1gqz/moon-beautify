@@ -92,6 +92,8 @@ function Theme.sanitize(name)
     name = name:gsub("_+$", ""):gsub("^_+", "")
     if name == "" then return nil end
     if #name > 48 then name = name:sub(1, 48) end
+    -- 纯点名会指向 root 或其上级，.import- 是导入暂存目录的保留前缀
+    if name:match("^%.+$") or name:sub(1, 8) == ".import-" then return nil end
     return name
 end
 
@@ -99,11 +101,6 @@ function Theme.dir(name)
     local safe = Theme.sanitize(name)
     if not safe then return nil end
     return Theme.root() .. "/" .. safe
-end
-
-function Theme.exists(name)
-    local dir = Theme.dir(name)
-    return dir ~= nil and lfs.attributes(dir .. "/theme.lua", "mode") == "file"
 end
 
 --- 删目录树
@@ -204,6 +201,25 @@ local function dump(value, depth, seen, out)
     end
 end
 
+--- 先写临时文件再改名覆盖：写到一半失败（磁盘满）不会把原文件截断
+---@return boolean ok, string|nil err
+local function writeFile(path, data)
+    local tmp = path .. ".new"
+    local file, err = io.open(tmp, "wb")
+    if not file then return false, err or ("写不了 " .. path) end
+    local wok = file:write(data)
+    local cok = file:close()
+    if not (wok and cok) then
+        os.remove(tmp)
+        return false, "写入失败：" .. path
+    end
+    if not os.rename(tmp, path) then
+        os.remove(tmp)
+        return false, "替换失败：" .. path
+    end
+    return true
+end
+
 local function serialize(data)
     local out = {
         "-- moon-beautify 主题包（月读美化插件）\n"
@@ -213,12 +229,7 @@ local function serialize(data)
     return table.concat(out)
 end
 
-local function deepcopy(value)
-    if type(value) ~= "table" then return value end
-    local out = {}
-    for k, v in pairs(value) do out[k] = deepcopy(v) end
-    return out
-end
+local deepcopy = Parts.copy
 
 --- 递归改写字符串值（返回新值；table 原地遍历）
 local function walk(value, fn)
@@ -327,10 +338,12 @@ end
 ---@param assetsDir string
 ---@return integer copied 收编的文件数
 ---@return string|nil first 第一张收编的文件名（当封面用）
+---@return string|nil err 写入失败原因
 local function collectAssets(conf, assetsDir)
     local used = usedNames(assetsDir)
     local copied = 0
     local first = nil
+    local err
     local seen = {}  -- 源路径 → assets 文件名/目录名
     walk(conf, function(s)
         local ext = s:lower():match("%.(%w+)$")
@@ -356,15 +369,22 @@ local function collectAssets(conf, assetsDir)
         local base = s:match("([^/\\]+)$") or "asset.bin"
         local asset = uniqueName(used, base)
         local dest = io.open(assetsDir .. "/" .. asset, "wb")
-        if not dest then return s end
-        dest:write(data)
-        dest:close()
+        if not dest then
+            err = err or ("写不了图片 " .. asset)
+            return s
+        end
+        local wok = dest:write(data)
+        local cok = dest:close()
+        if not (wok and cok) then
+            err = err or ("写图片失败 " .. asset)
+            return s
+        end
         seen[s] = asset
         copied = copied + 1
         if not first then first = asset end
         return ASSET_MARK .. asset
     end)
-    return copied, first
+    return copied, first, err
 end
 
 --- @assets/ 引用换回主题目录下的绝对路径
@@ -581,7 +601,7 @@ function Theme.dirty(name)
             -- 壁纸/锁屏在月读原生配置里，不混进 ext.beautify 的脏标记比较
             if p.type ~= "wallpaper" and p.type ~= "lockscreen" and active[p.slot] == p.id then
                 Parts.merge(expected, p.conf, p.slot)
-                for k, v in pairs(Parts.extract(live, p.slot)) do cur[k] = v end
+                Parts.merge(cur, Parts.extract(live, p.slot), p.slot)
             end
         end
     else
@@ -692,10 +712,13 @@ function Theme.save(name)
     if not mkdirp(dir) then
         return false, "建不了主题目录"
     end
-    removeTree(dir .. "/assets")
-    if not lfs.mkdir(dir .. "/assets") then return false, "建不了 assets 目录" end
+    -- 配置里的图片可能正指向本主题旧的 assets，所以先收编到临时目录，全部成功后再替换
+    local newAssets = dir .. "/.assets-new"
+    local newTheme = dir .. "/.theme-new.lua"
+    removeTree(newAssets)
+    if not lfs.mkdir(newAssets) then return false, "建不了 assets 目录" end
     local conf = snapshotConf()
-    local copied, first = collectAssets(conf, dir .. "/assets")
+    local copied, first, cerr = collectAssets(conf, newAssets)
     -- 存档里保留 @assets/ 相对引用：应用/读取部件时才换成当前主题目录的绝对路径，
     -- 这样导出的 zip 在别的设备上也不会断图。
     -- v2：整包 conf 保留给旧版/整包应用；parts 供部件库独立启用停用。
@@ -708,8 +731,9 @@ function Theme.save(name)
             slot = "wallpaper", type = "wallpaper", label = "界面壁纸",
             name = "界面壁纸", conf = wpConf,
         }
-        local n, wpFirst = collectAssets(wpPart.conf, dir .. "/assets")
+        local n, wpFirst, werr = collectAssets(wpPart.conf, newAssets)
         copied = copied + n
+        cerr = cerr or werr
         Parts.decorate({ wpPart }, safe)
         parts[#parts + 1] = wpPart
         if not first then first = wpFirst end
@@ -721,16 +745,19 @@ function Theme.save(name)
             slot = "lockscreen", type = "lockscreen", label = "锁屏壁纸",
             name = "锁屏壁纸", conf = lsConf,
         }
-        local n, lsFirst = collectAssets(lsPart.conf, dir .. "/assets")
+        local n, lsFirst, lerr = collectAssets(lsPart.conf, newAssets)
         copied = copied + n
+        cerr = cerr or lerr
         Parts.decorate({ lsPart }, safe)
         parts[#parts + 1] = lsPart
         if not first then first = lsFirst end
     end
+    if cerr then
+        removeTree(newAssets)
+        return false, cerr
+    end
     for _, part in ipairs(parts) do part.conf = deepcopy(part.conf) end
-    local file, werr = io.open(dir .. "/theme.lua", "w")
-    if not file then return false, werr or "写不了 theme.lua" end
-    file:write(serialize({
+    local wok, werr = writeFile(newTheme, serialize({
         kind = THEME_KIND,          -- 格式标识：导入时先认身份
         version = THEME_FORMAT,     -- 格式版本：将来 conf 键结构升级时做迁移判断
         name = safe,
@@ -738,7 +765,14 @@ function Theme.save(name)
         parts = parts,              -- v2：可组合部件
         cover = first and (ASSET_MARK .. first) or nil,   -- 列表缩略图
     }))
-    file:close()
+    if not wok then
+        removeTree(newAssets)
+        return false, werr
+    end
+    removeTree(dir .. "/assets")
+    if not os.rename(newAssets, dir .. "/assets") or not os.rename(newTheme, dir .. "/theme.lua") then
+        return false, "替换主题文件失败"
+    end
     note("moonbeautify theme saved", safe, copied .. " assets")
     return true, dir
 end
@@ -871,10 +905,8 @@ function Theme.updatePartConf(name, slot, partConf)
     data.version = THEME_FORMAT
     data.name = safe
     data.parts = raw
-    local file, werr = io.open(dir .. "/theme.lua", "w")
-    if not file then return false, werr or "写不了 theme.lua" end
-    file:write(serialize(data))
-    file:close()
+    local wok, werr = writeFile(dir .. "/theme.lua", serialize(data))
+    if not wok then return false, werr end
     note("moonbeautify theme part retargeted", safe .. "/" .. slot)
     return true
 end
@@ -1120,10 +1152,8 @@ function Theme.deletePart(name, slot)
     data.name = safe
     data.conf = conf
     data.parts = raw
-    local file, werr = io.open(dir .. "/theme.lua", "w")
-    if not file then return false, werr or "写不了 theme.lua" end
-    file:write(serialize(data))
-    file:close()
+    local wok, werr = writeFile(dir .. "/theme.lua", serialize(data))
+    if not wok then return false, werr end
     note("moonbeautify theme part deleted", pid)
     return true
 end
@@ -1158,9 +1188,9 @@ function Theme.delete(name)
         end)
     end
     -- 月读原生的界面壁纸 / 锁屏壁纸也可能引用主题图片（把主题里的图设成了壁纸），说明来源
-    local okMS, MoonSettings = pcall(require, "utils.settings")
+    local MoonSettings = require("utils.settings")
     local nativeHits, nativeDangling = {}, {}
-    if okMS and MoonSettings then
+    do
         for _, spec in ipairs({ { "features.wallpaper", "界面壁纸" }, { "features.lockscreen", "锁屏壁纸" } }) do
             local ok, conf = pcall(function() return MoonSettings.get(spec[1]) end)
             if ok and type(conf) == "table" then
@@ -1324,11 +1354,19 @@ function Theme.importZip(zipPath)
     local fromFile = zipName and zipName:match("^(.*)%.[%w]+$") or zipName
     local name = Theme.sanitize(cname or fromFile) or "theme"
     local dest = root .. "/" .. name
-    removeTree(dest)
+    -- 先把旧主题挪开，新主题就位后再删；失败时还原，避免覆盖导入丢掉旧主题
+    local backup = staging .. "-old"
+    local hadOld = lfs.attributes(dest, "mode") ~= nil
+    if hadOld and not os.rename(dest, backup) then
+        removeTree(staging)
+        return false, "挪不开旧主题"
+    end
     if not os.rename(base, dest) then
+        if hadOld then os.rename(backup, dest) end
         removeTree(staging)
         return false, "挪不进主题目录"
     end
+    if hadOld then removeTree(backup) end
     removeTree(staging)
     note("moonbeautify theme imported", name, zipPath)
     return true, name
