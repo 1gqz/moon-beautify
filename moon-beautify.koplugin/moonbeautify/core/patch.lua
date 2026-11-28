@@ -5,8 +5,10 @@
 2. Tabbar.widget：按配置 tab_icons[tab.id] 把底栏格子的 icon 换成图片路径。
 3. Base.build / Base.refresh：按组件自己的配置套背景图（widget_bg[组件 id]）、叠顶层图（widget_lace[组件 id]）；
    两者都按取景选区显示；不提供全组件通用背景/顶层图，组件尺寸不同会变形。
-4. 首页并排组合、选图器目录记忆、输入法键盘背景分别由 rows.lua / 本文件 / 本文件处理。
+4. 首页并排组合、选图器目录记忆、输入法（背景+按键）分别由 rows.lua / 本文件 / 本文件处理。
 5. 设置入口（settings.entries）另在 settings.lua。
+6. Settings.openGroup("appearance")：把 feature:ext.beautify 条目拆到「美化」小节，
+   不改月读 GROUP_FOLDERS / 源码。
 
 全部包在 pcall 里，月读升级导致字段变化时最多失效，不影响启动。
 
@@ -319,10 +321,10 @@ local function patchPicker()
     end
 end
 
---- 补丁 6：输入法键盘背景 + 按键透明度。
+--- 补丁 6：输入法键盘背景 + 按键皮肤/透明度。
 --- 两个 hook 点：
 ---   1) CenterContainer.paintTo（整个键盘绘制）：铺背景图
----   2) 按键内部 FrameContainer.paintTo（key[1]）：关白底 + 半透明提亮 + 格子边框常驻。
+---   2) 按键内部 FrameContainer.paintTo（key[1]）：皮肤图 / 关白底 / 半透明提亮 / 格子边框常驻。
 ---      必须挂在 FrameContainer 而不是 VirtualKey：点击高亮时 KOReader 用
 ---      widgetRepaint(self[1]) 只重绘按键自身，绕过 VirtualKey.paintTo。
 --- 不碰 widget 树结构：候选词条依赖 kb[1][1][1][1] 固定链、kb.layout 导航。
@@ -331,23 +333,38 @@ local function patchKeyboard()
     if VK._beautify_ime_bg then return end
     VK._beautify_ime_bg = true
 
+    local function imeItem()
+        local item = Store.conf().ime_bg
+        return type(item) == "table" and item or nil
+    end
+    local function hasBg(item)
+        return item and type(item.src) == "string" and item.src ~= ""
+    end
+    local function hasKeySkin(item)
+        return item and type(item.key_src) == "string" and item.key_src ~= ""
+    end
+    local function keyAlpha(item)
+        local a = item and tonumber(item.key_alpha) or 0
+        if a > 100 then a = 100 end
+        if a < 0 then a = 0 end
+        return a
+    end
+
     local orig_addKeys = VK.addKeys
     VK.addKeys = function(self, ...)
         orig_addKeys(self, ...)
         -- 关掉按键点击闪烁：invert() 会画出 focus 高亮（白格子），并在 e-ink 上
-        -- 经 yieldToEPDC 保持那一帧，导致"按完格子发白"。只在有键盘背景时逐个按键关，
-        -- 不改 KOReader 全局的 flash_keyboard 设置（移除背景后用户原设置照常生效）。
+        -- 经 yieldToEPDC 保持那一帧，导致"按完格子发白"。有背景或按键美化时逐个关，
+        -- 不改 KOReader 全局的 flash_keyboard 设置。
         pcall(function()
-            local item = Store.conf().ime_bg
-            if type(item) == "table" and type(item.src) == "string" and item.src ~= "" then
-                local vg = self[1] and self[1][1] and self[1][1][1] and self[1][1][1][1]
-                if type(vg) == "table" then
-                    for _i, row in ipairs(vg) do
-                        if type(row) == "table" then
-                            for _j, key in ipairs(row) do
-                                if type(key) == "table" then key.flash_keyboard = false end
-                            end
-                        end
+            local item = imeItem()
+            if not (hasBg(item) or hasKeySkin(item) or keyAlpha(item) > 0) then return end
+            local vg = self[1] and self[1][1] and self[1][1][1] and self[1][1][1][1]
+            if type(vg) ~= "table" then return end
+            for _i, row in ipairs(vg) do
+                if type(row) == "table" then
+                    for _j, key in ipairs(row) do
+                        if type(key) == "table" then key.flash_keyboard = false end
                     end
                 end
             end
@@ -361,10 +378,9 @@ local function patchKeyboard()
                 center._beautify_bg = true
                 local orig_paint = center.paintTo
                 center.paintTo = function(widget, bb, x, y)
-                    local item = Store.conf().ime_bg
-                    local has_src = type(item) == "table" and type(item.src) == "string" and item.src ~= ""
+                    local item = imeItem()
                     local w, h = widget.dimen.w, widget.dimen.h
-                    if has_src and w and h and w > 0 and h > 0 then
+                    if hasBg(item) and w and h and w > 0 and h > 0 then
                         pcall(function()
                             require("moonbeautify.render.bg").layer(item.src, w, h, nil, nil, item.focus):paintTo(bb, x, y)
                             local veil = tonumber(item.veil) or 0
@@ -388,15 +404,24 @@ local function patchKeyboard()
                             frame._beautify_keyalpha = true
                             local orig_frame_paint = frame.paintTo
                             frame.paintTo = function(widget, bb, fx, fy)
-                                local item = Store.conf().ime_bg
-                                local alpha = (type(item) == "table" and tonumber(item.key_alpha)) or 0
-                                if alpha > 100 then alpha = 100 end
+                                local item = imeItem()
+                                local skin = hasKeySkin(item)
+                                local alpha = keyAlpha(item)
                                 local bg = rawget(widget, "background")
-                                if alpha > 0 and type(bg) == "cdata" then
-                                    local white = (100 - alpha) / 100 * 0.4
-                                    local d = widget.dimen
-                                    if white > 0 and d then
-                                        pcall(function() bb:lightenRect(fx, fy, d.w, d.h, white) end)
+                                local d = widget.dimen
+                                if (skin or alpha > 0) and type(bg) == "cdata" and d then
+                                    if skin then
+                                        pcall(function()
+                                            require("moonbeautify.render.bg").layer(
+                                                item.key_src, d.w, d.h, nil, nil, item.key_focus
+                                            ):paintTo(bb, fx, fy)
+                                        end)
+                                    end
+                                    if alpha > 0 then
+                                        local white = (100 - alpha) / 100 * 0.4
+                                        if white > 0 then
+                                            pcall(function() bb:lightenRect(fx, fy, d.w, d.h, white) end)
+                                        end
                                     end
                                     -- 关白底（false 短路 if self.background），格子用常驻内边框
                                     local saved_bg, saved_inner = bg, widget.inner_bordersize
@@ -420,11 +445,93 @@ local function patchKeyboard()
         end)
     end
 end
+--- 补丁 7：外观组页拆出「美化」小节。条目仍挂 group=appearance，只改展示，
+--- 不碰月读 GROUP_FOLDERS（那是月读自己的表，插件不该改源码）。
+local function patchAppearanceSection()
+    local Settings = require("desktop.pages.setting")
+    if Settings._beautify_appearance then return end
+    Settings._beautify_appearance = true
+
+    local Overlay = require("desktop.pages.setting.overlay")
+    local Row = require("ui.themes.widgets.row")
+    local _ = require("moonbeautify.l10n")
+    local PREFIX = "feature:ext.beautify"
+
+    local function isBeautify(id)
+        return type(id) == "string"
+            and (id == PREFIX or id:sub(1, #PREFIX + 1) == PREFIX .. ":")
+    end
+
+    local function navRow(desktop, entry)
+        return function(iw)
+            return Row.widget({
+                width = iw,
+                kind = "nav",
+                icon = entry.icon,
+                title = entry.title,
+                subtitle = entry.subtitle,
+                status = entry.status,
+                status_on = entry.status_on,
+                callback = function() Overlay.push(desktop, entry.page) end,
+            })
+        end
+    end
+
+    local function rowsOf(desktop, entries)
+        local rows = {}
+        for _i, entry in ipairs(entries) do
+            rows[#rows + 1] = entry.row or navRow(desktop, entry)
+        end
+        return rows
+    end
+
+    local orig = Settings.openGroup
+    Settings.openGroup = function(desktop, group_id)
+        if group_id ~= "appearance" then
+            return orig(desktop, group_id)
+        end
+        local group
+        for _i, g in ipairs(Settings.groups(desktop)) do
+            if g.id == "appearance" then group = g break end
+        end
+        if not group or #group.entries == 0 then return false end
+
+        local look, beautify = {}, {}
+        for _i, entry in ipairs(group.entries) do
+            if isBeautify(entry.id) then
+                beautify[#beautify + 1] = entry
+            else
+                look[#look + 1] = entry
+            end
+        end
+        -- 没装上本扩展条目时退回月读原样（单节列出）
+        if #beautify == 0 then return orig(desktop, group_id) end
+
+        Overlay.open(desktop, {
+            id = "group:appearance",
+            title = group.title,
+            docs = require("utils.docs").group("appearance"),
+            sections = function()
+                local sections = {}
+                if #look > 0 then
+                    sections[#sections + 1] = { title = _("外观"), rows = rowsOf(desktop, look) }
+                end
+                sections[#sections + 1] = { title = _("美化"), rows = rowsOf(desktop, beautify) }
+                return sections
+            end,
+        })
+        return true
+    end
+end
+
 --- 安装全部补丁（幂等）。
 function Patch.install()
     if installed then return end
     installed = true
-    for _idx, fn in ipairs({ patchIcon, patchTabbar, patchHome, patchRows, patchPicker, patchKeyboard }) do
+    for _idx, fn in ipairs({
+        patchIcon, patchTabbar, patchHome, patchRows, patchPicker, patchKeyboard,
+        patchAppearanceSection,
+    }) do
         local ok, err = pcall(fn)
         if not ok then
             pcall(function() require("utils.log").error("moonbeautify patch failed:", tostring(err)) end)
