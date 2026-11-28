@@ -27,6 +27,15 @@ local _ = require("moonbeautify.l10n")
 
 local Screen = Device.screen
 
+local function fill(bb, x, y, w, h, color)
+    if Theme.isRgb(color) then
+        bb:paintRectRGB32(x, y, w, h, color)
+    else
+        bb:paintRect(x, y, w, h, color)
+    end
+end
+
+
 -- 老款 Kindle（非 MTK 平台）电子纸控制器在连续 "ui" 快刷大面积图片时残影明显，
 -- 手势结束时补一次整屏刷新；新平台保持原样。
 local needEndRefresh = Device:isKindle() and not Device:isMTK()
@@ -230,7 +239,7 @@ end
 
 function Picker:paintTo(bb, x, y)
     self.dimen.x, self.dimen.y = x, y
-    bb:paintRect(x, y, self.screen_w, self.screen_h, Blitbuffer.Color8(self.color_page))
+    fill(bb, x, y, self.screen_w, self.screen_h, self.color_page)
 
     if self.title_widget then self.title_widget:paintTo(bb, x + self.margin, y + math.floor(self.top_h / 3)) end
     -- 提示文字放在图片实际底边下方（img 在可用区里垂直居中，底边是 img.y+img.h，不是 top_h+img.h），
@@ -257,16 +266,16 @@ function Picker:paintTo(bb, x, y)
 
     -- 选区框 + 四角手柄
     local r = self:focusRect()
-    local ink = Blitbuffer.Color8(self.color_accent)
+    local ink = self.color_accent
     local lw = 3
-    bb:paintRect(x + r.x, y + r.y, r.w, lw, ink)
-    bb:paintRect(x + r.x, y + r.y + r.h - lw, r.w, lw, ink)
-    bb:paintRect(x + r.x, y + r.y, lw, r.h, ink)
-    bb:paintRect(x + r.x + r.w - lw, y + r.y, lw, r.h, ink)
+    fill(bb, x + r.x, y + r.y, r.w, lw, ink)
+    fill(bb, x + r.x, y + r.y + r.h - lw, r.w, lw, ink)
+    fill(bb, x + r.x, y + r.y, lw, r.h, ink)
+    fill(bb, x + r.x + r.w - lw, y + r.y, lw, r.h, ink)
     local hz = math.max(8, math.floor(HANDLE / 2))
     for _i, hx in ipairs({ r.x, r.x + r.w }) do
         for _i, hy in ipairs({ r.y, r.y + r.h }) do
-            bb:paintRect(x + hx - hz, y + hy - hz, hz * 2, hz * 2, ink)
+            fill(bb, x + hx - hz, y + hy - hz, hz * 2, hz * 2, ink)
         end
     end
 
@@ -279,14 +288,13 @@ end
 --- 统一按钮样式：浅底深字 + 细边框。
 function Picker:drawButton(bb, ox, r, label)
     if not r then return end
-    local page = Blitbuffer.Color8(self.color_page)
-    local ink = Blitbuffer.Color8(self.color_ink)
-    bb:paintRect(ox + r.x, r.y, r.w, r.h, page)
+    local page, ink = self.color_page, self.color_ink
+    fill(bb, ox + r.x, r.y, r.w, r.h, page)
     local bw = 2
-    bb:paintRect(ox + r.x, r.y, r.w, bw, ink)
-    bb:paintRect(ox + r.x, r.y + r.h - bw, r.w, bw, ink)
-    bb:paintRect(ox + r.x, r.y, bw, r.h, ink)
-    bb:paintRect(ox + r.x + r.w - bw, r.y, bw, r.h, ink)
+    fill(bb, ox + r.x, r.y, r.w, bw, ink)
+    fill(bb, ox + r.x, r.y + r.h - bw, r.w, bw, ink)
+    fill(bb, ox + r.x, r.y, bw, r.h, ink)
+    fill(bb, ox + r.x + r.w - bw, r.y, bw, r.h, ink)
     if label then
         local lh, lw = 24, nil
         if type(label.getSize) == "function" then

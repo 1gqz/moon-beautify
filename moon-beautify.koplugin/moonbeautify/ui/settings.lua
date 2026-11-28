@@ -46,7 +46,9 @@ function Settings.entries(desktop)
         local ime = type(conf.ime_bg) == "table" and conf.ime_bg or nil
         local has_ime_bg = ime and type(ime.src) == "string" and ime.src ~= ""
         local key_alpha = ime and tonumber(ime.key_alpha) or 0
-        local has_ime_key = ime and ((type(ime.key_src) == "string" and ime.key_src ~= "") or key_alpha > 0)
+        local Regions = require("moonbeautify.core.ime_regions")
+        if ime then Regions.migrate(ime) end
+        local has_ime_key = ime and (Regions.anySkin(ime) or key_alpha > 0)
         local theme_count = #require("moonbeautify.themes.theme").list()
         local ver = Update.version()
         local auto = Update.autoEnabled()
@@ -68,15 +70,15 @@ function Settings.entries(desktop)
                     function() RowsPage.page(desktop) end),
             } },
             { title = _("输入法"), rows = {
-                nav("wallpaper", _("键盘背景"),
-                    has_ime_bg and _("已设置背景图") or _("给键盘加一张背景图"),
-                    function() DecorPage.imeBgDialog(desktop) end),
-                nav("apps", _("按键"),
-                    has_ime_key and (type(ime.key_src) == "string" and ime.key_src ~= ""
-                        and _("已设置按键皮肤")
-                        or T(_("透明度 %1%"), key_alpha))
-                        or _("给按键加皮肤或调透明度"),
-                    function() DecorPage.imeKeysDialog(desktop) end),
+                nav("apps", _("输入法"),
+                    (has_ime_bg or has_ime_key)
+                        and (has_ime_bg and has_ime_key and _("已设置背景与按键")
+                            or has_ime_bg and _("已设置背景图")
+                            or (type(ime.key_src) == "string" and ime.key_src ~= ""
+                                and _("已设置按键皮肤")
+                                or T(_("透明度 %1%"), key_alpha)))
+                        or _("分区键皮 · 布局预览"),
+                    function() require("moonbeautify.ui.ime_layout").show(desktop) end),
             } },
             { title = _("主题"), rows = {
                 nav("save", _("主题"),

@@ -40,12 +40,24 @@ local native = {}
 --- 缩放结果缓存
 local cache = {}
 
+local lfs = require("libs/libkoreader-lfs")
+
+--- 路径 + 修改时间，避免同路径换图仍命中旧解码
+local function fileMtime(path)
+    return lfs.attributes(path, "modification") or 0
+end
+
+local function fileKey(path)
+    return path .. "@" .. tostring(fileMtime(path))
+end
+
 --- 读原图尺寸：先读文件头，认不出（svg 等）才整图解一次，解完立刻释放
 ---@param path string
 ---@return number|nil, number|nil
 local function nativeSize(path)
+    local mod = fileMtime(path)
     local hit = native[path]
-    if hit then return hit[1], hit[2] end
+    if hit and hit[3] == mod then return hit[1], hit[2] end
     local w, h = Image.dimensions(path)
     if not w then
         local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false) end)
@@ -53,7 +65,7 @@ local function nativeSize(path)
         w, h = bb:getWidth(), bb:getHeight()
         bb:free()
     end
-    native[path] = { w, h }
+    native[path] = { w, h, mod }
     return w, h
 end
 Bg.nativeSize = nativeSize
@@ -89,7 +101,7 @@ end
 ---@param h number
 ---@return table|nil bb, number dw, number dh
 local function prepared(path, mode, w, h)
-    local key = path .. "#" .. mode .. "#" .. w .. "x" .. h
+    local key = fileKey(path) .. "#" .. mode .. "#" .. w .. "x" .. h
     local hit = cache[key]
     if hit then return hit[1], hit[2], hit[3] end
     local iw, ih = nativeSize(path)
@@ -103,7 +115,7 @@ end
 
 --- 取「整图解码到 dw×dh」的源，带缓存（选区裁切复用）
 local function decodedAt(path, dw, dh)
-    local key = path .. "#crop#" .. dw .. "x" .. dh
+    local key = fileKey(path) .. "#crop#" .. dw .. "x" .. dh
     local hit = cache[key]
     if hit then return hit[1], hit[2], hit[3] end
     local ok, bb = pcall(function() return RenderImage:renderImageFile(path, false, dw, dh) end)

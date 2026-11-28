@@ -333,15 +333,13 @@ local function patchKeyboard()
     if VK._beautify_ime_bg then return end
     VK._beautify_ime_bg = true
 
+    local Regions = require("moonbeautify.core.ime_regions")
     local function imeItem()
         local item = Store.conf().ime_bg
         return type(item) == "table" and item or nil
     end
     local function hasBg(item)
         return item and type(item.src) == "string" and item.src ~= ""
-    end
-    local function hasKeySkin(item)
-        return item and type(item.key_src) == "string" and item.key_src ~= ""
     end
     local function keyAlpha(item)
         local a = item and tonumber(item.key_alpha) or 0
@@ -358,7 +356,7 @@ local function patchKeyboard()
         -- 不改 KOReader 全局的 flash_keyboard 设置。
         pcall(function()
             local item = imeItem()
-            if not (hasBg(item) or hasKeySkin(item) or keyAlpha(item) > 0) then return end
+            if not (hasBg(item) or Regions.anySkin(item) or keyAlpha(item) > 0) then return end
             local vg = self[1] and self[1][1] and self[1][1][1] and self[1][1][1][1]
             if type(vg) ~= "table" then return end
             for _i, row in ipairs(vg) do
@@ -391,7 +389,7 @@ local function patchKeyboard()
                 end
             end
 
-            -- 2) 逐个 hook 按键内部 FrameContainer（key[1]）的 paintTo。
+            -- 2) 逐个 hook 按键内部 FrameContainer：按分区铺不同键皮。
             --    Color 是 cdata：一律用 rawget + type 判断，不用 == / ~=。
             local vg = center[1]
             if type(vg) ~= "table" then return end
@@ -405,7 +403,8 @@ local function patchKeyboard()
                             local orig_frame_paint = frame.paintTo
                             frame.paintTo = function(widget, bb, fx, fy)
                                 local item = imeItem()
-                                local skin = hasKeySkin(item)
+                                local region = Regions.of(key)
+                                local skin = Regions.skin(item, region)
                                 local alpha = keyAlpha(item)
                                 local bg = rawget(widget, "background")
                                 local d = widget.dimen
@@ -413,7 +412,7 @@ local function patchKeyboard()
                                     if skin then
                                         pcall(function()
                                             require("moonbeautify.render.bg").layer(
-                                                item.key_src, d.w, d.h, nil, nil, item.key_focus
+                                                skin.src, d.w, d.h, nil, nil, skin.focus
                                             ):paintTo(bb, fx, fy)
                                         end)
                                     end
