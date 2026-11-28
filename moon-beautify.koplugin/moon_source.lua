@@ -2,9 +2,10 @@
 月读扩展描述：不是书源。往首页加吧唧 / 相框组件，并补丁底栏图标、组件背景与顶层图、并排组合、壁纸与键盘美化等。
 
 契约（api = 1，id = ext.<name>，provides.source = false）：
-  home_widgets 简写表 { id, title, icon, build = fun(ctx, w, h), heightRange = fun(ctx, opts), settings = fun(desktop, id) }
+  home_widgets 简写表 { id, title, icon, category, build = fun(ctx, w, h), heightRange = fun(ctx, opts), settings = fun(desktop, id) }
   build 返回占满 w × h 的控件；settings 让首页编辑态出现设置按钮（设置里抛错会被月读记日志）。
-  provides.features.setting 往「设置 → 外观」的「美化」小节加「月华美化」页，全部配置项都在里面。
+  category 写「美化」：添加组件列表单独成栏；不写会掉进「扩展」。
+  provides.features.setting 往「设置 → 外观」加「月华美化」页；打开外观时由本扩展补丁拆出「美化」小节（不改月读源码）。
 组件 id 由月读补成 ext.beautify.<短名>，发布后不要改。
 
 --]]
@@ -52,6 +53,7 @@ local function frameWidget(id, title)
         id = id,
         title = title,
         icon = "image",
+        category = _("美化"),
         heightRange = function(_ctx, opts)
             local w = (opts and opts.width) or 540
             return { height = math.max(80, math.floor(w * FRAME_RATIO)) }
@@ -76,6 +78,7 @@ local function badgeWidget(id, title)
         id = id, -- 月读补成 ext.beautify.<id>
         title = title,
         icon = "image",
+        category = _("美化"),
         heightRange = function(_ctx, opts) return heightOf(opts) end,
         build = function(_ctx, w, h)
             return require("moonbeautify.widgets.view").badge(w, h, prefix)
