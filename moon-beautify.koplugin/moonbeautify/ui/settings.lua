@@ -1,5 +1,6 @@
 --[[--
 月读设置页「外观 → 美化 → 月华美化」入口：本扩展的全部配置项集中在这一页。
+「美化」小节由 core.patch 在打开外观组时拆出，不改月读源码。
 
 @module moonbeautify.ui.settings
 --]]
@@ -18,7 +19,6 @@ local ThemePage = require("moonbeautify.ui.theme_page")
 local Settings = {}
 
 --- 月读设置页「外观 → 美化 → 月华美化」：本扩展的全部配置项集中在这一页。
---- 「美化」小节由月读外观组页按条目 id（feature:ext.beautify:main）分出。
 ---@param desktop table|nil
 ---@return table[]
 function Settings.entries(desktop)
@@ -43,7 +43,10 @@ function Settings.entries(desktop)
         local lace_count = count(conf.widget_lace)
         local row_count = type(conf.rows) == "table" and #conf.rows or 0
         local custom_order = type(conf.tab_order) == "table" and #conf.tab_order > 0
-        local has_ime = type(conf.ime_bg) == "table" and type(conf.ime_bg.src) == "string"
+        local ime = type(conf.ime_bg) == "table" and conf.ime_bg or nil
+        local has_ime_bg = ime and type(ime.src) == "string" and ime.src ~= ""
+        local key_alpha = ime and tonumber(ime.key_alpha) or 0
+        local has_ime_key = ime and ((type(ime.key_src) == "string" and ime.key_src ~= "") or key_alpha > 0)
         local theme_count = #require("moonbeautify.themes.theme").list()
         local ver = Update.version()
         local auto = Update.autoEnabled()
@@ -65,9 +68,15 @@ function Settings.entries(desktop)
                     function() RowsPage.page(desktop) end),
             } },
             { title = _("输入法"), rows = {
-                nav("keyboard", _("输入法背景"),
-                    has_ime and _("已给键盘设背景图") or _("给输入法键盘加一张背景图"),
-                    function() DecorPage.imeDialog(desktop) end),
+                nav("wallpaper", _("键盘背景"),
+                    has_ime_bg and _("已设置背景图") or _("给键盘加一张背景图"),
+                    function() DecorPage.imeBgDialog(desktop) end),
+                nav("apps", _("按键"),
+                    has_ime_key and (type(ime.key_src) == "string" and ime.key_src ~= ""
+                        and _("已设置按键皮肤")
+                        or T(_("透明度 %1%"), key_alpha))
+                        or _("给按键加皮肤或调透明度"),
+                    function() DecorPage.imeKeysDialog(desktop) end),
             } },
             { title = _("主题"), rows = {
                 nav("save", _("主题"),

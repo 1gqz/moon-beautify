@@ -20,7 +20,7 @@ local SLOTS = {
     { slot = "badge4",     type = "badge",     label = "吧唧 4",   prefix = { "badge4_" } },
     { slot = "frame1",     type = "frame",     label = "相框 1",   prefix = { "frame_" } },
     { slot = "frame2",     type = "frame",     label = "相框 2",   prefix = { "frame2_" } },
-    { slot = "ime",        type = "ime",       label = "输入法键盘背景", exact = { "ime_bg" } },
+    { slot = "ime",        type = "ime",       label = "输入法", exact = { "ime_bg" } },
 }
 M.TYPE_LABEL = {
     icons = "底栏图标",
@@ -29,7 +29,7 @@ M.TYPE_LABEL = {
     component = "组件配置",
     wallpaper = "界面壁纸",
     lockscreen = "锁屏壁纸",
-    ime = "输入法键盘背景",
+    ime = "输入法",
     misc = "其他",
 }
 

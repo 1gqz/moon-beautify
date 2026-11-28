@@ -1,5 +1,5 @@
 --[[--
-组件背景、组件顶层图（花边）与输入法键盘背景。
+组件背景、组件顶层图（花边）与输入法（键盘背景 + 按键）。
 
 @module moonbeautify.ui.decor_page
 --]]
@@ -153,23 +153,45 @@ local function widgetBgPage(desktop)
     end)
 end
 
---- 输入法键盘背景：选图 / 取景选区 / 提亮 / 移除
+local function nameOf(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    return path:match("([^/]+)$") or path
+end
+
+--- ime_bg 空表或只剩无效字段时写成 nil；0 透明度不占位
+local function normalizeIme(bg)
+    if type(bg) ~= "table" then return nil end
+    if tonumber(bg.key_alpha) and tonumber(bg.key_alpha) <= 0 then bg.key_alpha = nil end
+    if tonumber(bg.veil) and tonumber(bg.veil) <= 0 then bg.veil = nil end
+    local has_bg = type(bg.src) == "string" and bg.src ~= ""
+    local has_key = (type(bg.key_src) == "string" and bg.key_src ~= "") or bg.key_alpha ~= nil
+    if not has_bg then bg.src, bg.focus, bg.veil = nil, nil, nil end
+    if not has_key then bg.key_src, bg.key_focus, bg.key_alpha = nil, nil, nil end
+    if next(bg) == nil then return nil end
+    return bg
+end
+
+local function saveIme(desktop, mutate, refreshDlg, quiet)
+    local c = Store.conf()
+    c.ime_bg = type(c.ime_bg) == "table" and c.ime_bg or {}
+    mutate(c.ime_bg)
+    c.ime_bg = normalizeIme(c.ime_bg)
+    Store.save()
+    if not quiet then repaint(desktop) end
+    if refreshDlg then refreshDlg() end
+end
+
+--- 键盘背景：选图 / 取景 / 提亮 / 移除（不动按键字段）
 ---@param desktop table|nil
 local function imeBgDialog(desktop)
-    local function nameOf(path)
-        if type(path) ~= "string" or path == "" then return nil end
-        return path:match("([^/]+)$") or path
-    end
     local function makeItems()
-        local c = Store.conf()
-        local item = type(c.ime_bg) == "table" and c.ime_bg or {}
+        local item = type(Store.conf().ime_bg) == "table" and Store.conf().ime_bg or {}
         local focus = type(item.focus) == "table" and require("moonbeautify.widgets.view").focusOf(item.focus) or nil
         local name = nameOf(item.src)
         return {
             { value = "pick", text = name and T(_("更换背景图：%1"), name) or _("选一张背景图…"), keep_open = true },
             { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
             { value = "veil", text = T(_("内容提亮：%1%"), tonumber(item.veil) or 0), keep_open = true },
-            { value = "alpha", text = T(_("按键透明度：%1%"), tonumber(item.key_alpha) or 0), keep_open = true },
             { value = "reset", text = _("移除背景"), enabled = name ~= nil, keep_open = true },
         }
     end
@@ -177,31 +199,18 @@ local function imeBgDialog(desktop)
     local function refreshDlg()
         if dlg then pcall(function() dlg.items = makeItems(); dlg:refresh() end) end
     end
-    local function save(mutate)
-        local c = Store.conf()
-        c.ime_bg = type(c.ime_bg) == "table" and c.ime_bg or {}
-        mutate(c.ime_bg)
-        if next(c.ime_bg) == nil then c.ime_bg = nil end
-        Store.save()
-        repaint(desktop)
-        refreshDlg()
-    end
-    dlg = choose(_("输入法键盘背景"), makeItems, nil, function(value)
-        local c = Store.conf()
-        local item = type(c.ime_bg) == "table" and c.ime_bg or {}
+    dlg = choose(_("键盘背景"), makeItems, nil, function(value)
+        local item = type(Store.conf().ime_bg) == "table" and Store.conf().ime_bg or {}
         if value == "pick" then
             pickPath(desktop, item.src, true, function(path)
-                save(function(bg) bg.src = path end)
+                saveIme(desktop, function(bg) bg.src = path end, refreshDlg)
             end)
         elseif value == "anchor" then
             local focus = type(item.focus) == "table" and require("moonbeautify.widgets.view").focusOf(item.focus) or nil
             chooseFocus(item.src, focus, function(v)
-                -- 只落盘不 repaint：避免全屏选区关闭后重建叠层导致设置页重现
-                local cc = Store.conf()
-                cc.ime_bg = type(cc.ime_bg) == "table" and cc.ime_bg or {}
-                cc.ime_bg.focus = { x = v.x, y = v.y, w = v.w, h = v.h }
-                Store.save()
-                refreshDlg()
+                saveIme(desktop, function(bg)
+                    bg.focus = { x = v.x, y = v.y, w = v.w, h = v.h }
+                end, refreshDlg, true)
             end, desktop)
         elseif value == "veil" then
             Spin:new{
@@ -211,9 +220,48 @@ local function imeBgDialog(desktop)
                     format = function(v) return v .. "%" end,
                 } },
                 callback = function(v)
-                    save(function(bg) bg.veil = math.floor(v) end)
+                    saveIme(desktop, function(bg) bg.veil = math.floor(v) end, refreshDlg)
                 end,
             }:show()
+        elseif value == "reset" then
+            saveIme(desktop, function(bg)
+                bg.src, bg.focus, bg.veil = nil, nil, nil
+            end, refreshDlg)
+        end
+    end)
+end
+
+--- 按键：皮肤图 / 取景 / 透明度 / 移除（不动背景字段）
+---@param desktop table|nil
+local function imeKeysDialog(desktop)
+    local function makeItems()
+        local item = type(Store.conf().ime_bg) == "table" and Store.conf().ime_bg or {}
+        local focus = type(item.key_focus) == "table" and require("moonbeautify.widgets.view").focusOf(item.key_focus) or nil
+        local name = nameOf(item.key_src)
+        return {
+            { value = "pick", text = name and T(_("更换按键皮肤：%1"), name) or _("选一张按键皮肤…"), keep_open = true },
+            { value = "anchor", text = T(_("取景选区：%1"), focusText(focus)), enabled = true, keep_open = true },
+            { value = "alpha", text = T(_("按键透明度：%1%"), tonumber(item.key_alpha) or 0), keep_open = true },
+            { value = "reset", text = _("移除按键美化"), enabled = name ~= nil or (tonumber(item.key_alpha) or 0) > 0, keep_open = true },
+        }
+    end
+    local dlg
+    local function refreshDlg()
+        if dlg then pcall(function() dlg.items = makeItems(); dlg:refresh() end) end
+    end
+    dlg = choose(_("按键"), makeItems, nil, function(value)
+        local item = type(Store.conf().ime_bg) == "table" and Store.conf().ime_bg or {}
+        if value == "pick" then
+            pickPath(desktop, item.key_src, true, function(path)
+                saveIme(desktop, function(bg) bg.key_src = path end, refreshDlg)
+            end)
+        elseif value == "anchor" then
+            local focus = type(item.key_focus) == "table" and require("moonbeautify.widgets.view").focusOf(item.key_focus) or nil
+            chooseFocus(item.key_src, focus, function(v)
+                saveIme(desktop, function(bg)
+                    bg.key_focus = { x = v.x, y = v.y, w = v.w, h = v.h }
+                end, refreshDlg, true)
+            end, desktop)
         elseif value == "alpha" then
             Spin:new{
                 title = _("按键透明度"),
@@ -222,13 +270,13 @@ local function imeBgDialog(desktop)
                     format = function(v) return v .. "%" end,
                 } },
                 callback = function(v)
-                    save(function(bg) bg.key_alpha = math.floor(v) end)
+                    saveIme(desktop, function(bg) bg.key_alpha = math.floor(v) end, refreshDlg)
                 end,
             }:show()
         elseif value == "reset" then
-            save(function(bg)
-                for k in pairs(bg) do bg[k] = nil end
-            end)
+            saveIme(desktop, function(bg)
+                bg.key_src, bg.key_focus, bg.key_alpha = nil, nil, nil
+            end, refreshDlg)
         end
     end)
 end
@@ -323,7 +371,8 @@ local function widgetLacePage(desktop)
 end
 
 M.bgPage = widgetBgPage
-M.imeDialog = imeBgDialog
+M.imeBgDialog = imeBgDialog
+M.imeKeysDialog = imeKeysDialog
 M.lacePage = widgetLacePage
 
 return M

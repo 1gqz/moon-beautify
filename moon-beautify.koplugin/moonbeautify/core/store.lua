@@ -21,8 +21,10 @@
                        false/空 = 关；旧 fit 字段仅兼容读取，不再提供入口
   widget_lace_fit  —   已废弃，不再单独占键
   rows         table   并排组合：{ { 组件id, 组件id }, ... }，同一页的同组成员合成一行
-  ime_bg       table   输入法键盘背景：{ src = 图片绝对路径, veil = 0-100 内容提亮,
-                       focus = { x, y, w, h } 取景选区, key_alpha = 0-100 按键透明度 }
+  ime_bg       table   输入法美化（背景 + 按键同一张表）：
+                       src / veil / focus     键盘背景图、内容提亮 0-100、取景选区
+                       key_src / key_focus    按键皮肤图与取景选区（铺到每个按键）
+                       key_alpha              0-100 按键透明度（无皮肤时半透白键；有皮肤时提亮）
   last_dir     string  上一次选图用过的目录；没单独配路径的选图器都从这里打开（与界面壁纸共用）
 
 @module moonbeautify.core.store
