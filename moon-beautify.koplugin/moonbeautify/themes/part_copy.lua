@@ -12,18 +12,7 @@ local Store = require("moonbeautify.core.store")
 local M = {}
 
 local copy = Parts.copy
-
-local function walk(value, fn)
-    if type(value) ~= "table" then return value end
-    for k, v in pairs(value) do
-        if type(v) == "string" then
-            value[k] = fn(v)
-        elseif type(v) == "table" then
-            walk(v, fn)
-        end
-    end
-    return value
-end
+local walk = Parts.walk
 
 --- 枚举部件配置里指向图片文件或图片文件夹的字符串（去重）
 function M.images(conf)
@@ -67,7 +56,8 @@ local function sameDir(a, b)
     return true
 end
 
-local function usedNames(dir)
+--- 目录里已有的文件名集合（给 uniqueName 起步用）
+function M.usedNames(dir)
     local used = {}
     for _i, name in ipairs(Fs.list(dir)) do used[name] = true end
     return used
@@ -78,6 +68,7 @@ local function copyFile(src, dst)
     return data ~= nil and Fs.write(dst, data) == true
 end
 
+--- 递归复制目录；任一文件失败返回 false（已复制的不回滚）
 local function copyDir(src, dst)
     if not Paths.ensureDir(dst) then return false end
     local ok = true
@@ -92,7 +83,9 @@ local function copyDir(src, dst)
     end
     return ok
 end
+M.copyDir = copyDir
 
+--- 在 used 里占一个不重名的名字：a.png → a_2.png，目录 frames → frames_2
 local function uniqueName(used, base)
     if not used[base] then used[base] = true return base end
     local stem, ext = base:match("^(.*)%.(%w+)$")
@@ -104,6 +97,7 @@ local function uniqueName(used, base)
         i = i + 1
     end
 end
+M.uniqueName = uniqueName
 
 --- 内容相同就复用目标文件，否则起新名字
 local function destNameFor(used, targetDir, base, src, isDir)
@@ -125,7 +119,7 @@ end
 function M.copyTo(conf, targetDir)
     local newConf = copy(conf) or {}
     Paths.ensureDir(targetDir)
-    local used, repl, files, failed = usedNames(targetDir), {}, {}, 0
+    local used, repl, files, failed = M.usedNames(targetDir), {}, {}, 0
     for _, item in ipairs(M.images(newConf)) do
         local base = item.path:match("([^/\\]+)$") or "image"
         local name = destNameFor(used, targetDir, base, item.path, item.dir)
@@ -149,16 +143,9 @@ end
 
 --- 把改写后的配置落到当前设置（原生部件走各自数据层，其余合并回 ext.beautify）
 function M.apply(part, newConf)
-    if part.type == "wallpaper" then
-        return require("moonbeautify.themes.wallpaper_part").apply(newConf)
-    end
-    if part.type == "lockscreen" then
-        return require("moonbeautify.themes.lockscreen_part").apply(newConf)
-    end
-    local conf = Store.conf()
-    Parts.merge(conf, newConf, part.slot)
+    local ok = Parts.put(Store.conf(), part.type, part.slot, newConf)
     Store.save()
-    return true
+    return ok
 end
 
 return M

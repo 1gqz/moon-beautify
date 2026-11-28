@@ -38,18 +38,32 @@ end
 function lfs.mkdir(p) return run("mkdir " .. q(p) .. " 2>/dev/null") or nil end
 function lfs.rmdir(p) return run("rmdir " .. q(p) .. " 2>/dev/null") or nil end
 
-local T = { conf = {}, sh = run, repo = repo }
+--- conf：本插件配置（ext.beautify）；native：月读原生设置，按 id 分表（features.wallpaper 等）
+local T = { conf = {}, native = {}, sh = run, repo = repo }
 
 package.preload["libs/libkoreader-lfs"] = function() return lfs end
 package.preload["utils.log"] = function() return { warn = function() end } end
 package.preload["utils.settings"] = function()
     return {
         getSource = function() return T.conf end, saveSource = function() end,
-        get = function() return {} end, save = function() end,
+        get = function(id)
+            T.native[id] = T.native[id] or {}
+            return T.native[id]
+        end,
+        save = function(id, values) T.native[id] = values end,
     }
 end
 package.preload["datastorage"] = function() return { getDataDir = function() return os.tmpname() end } end
-package.preload["ffi/sha2"] = function() return { md5 = function(s) return s end } end
+package.preload["ffi/sha2"] = function()
+    return { md5 = function(s)
+        if s then return s end
+        local parts = {}
+        return function(chunk)
+            if not chunk then return table.concat(parts) end
+            parts[#parts + 1] = chunk
+        end
+    end }
+end
 package.preload["features.wallpaper.setting"] = function() error("absent") end
 package.preload["features.lockscreen.setting"] = function() error("absent") end
 

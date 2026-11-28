@@ -95,4 +95,9 @@ function M.matches(partConf)
     return true
 end
 
+--- 值得存进主题：只有月读合成锁屏（compose）才有内容，ko 模式不生成空部件
+function M.shareable(partConf)
+    return partConf.lock_screen == "compose"
+end
+
 return M

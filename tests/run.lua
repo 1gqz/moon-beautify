@@ -9,7 +9,7 @@ end
 
 local failed = 0
 for _, case in ipairs(T.cases) do
-    T.conf = {}
+    T.conf, T.native = {}, {}
     local ok, err = xpcall(case.fn, debug.traceback)
     if ok then
         print("ok   " .. case.name)

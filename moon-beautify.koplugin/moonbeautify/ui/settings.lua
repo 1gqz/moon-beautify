@@ -1,5 +1,5 @@
 --[[--
-月读设置页「外观 → 月华美化」入口：本扩展的全部配置项集中在这一页。
+月读设置页「外观 → 美化 → 月华美化」入口：本扩展的全部配置项集中在这一页。
 
 @module moonbeautify.ui.settings
 --]]
@@ -17,7 +17,8 @@ local ThemePage = require("moonbeautify.ui.theme_page")
 
 local Settings = {}
 
---- 月读设置页「外观 → 月华美化」：本扩展的全部配置项集中在这一页。
+--- 月读设置页「外观 → 美化 → 月华美化」：本扩展的全部配置项集中在这一页。
+--- 「美化」小节由月读外观组页按条目 id（feature:ext.beautify:main）分出。
 ---@param desktop table|nil
 ---@return table[]
 function Settings.entries(desktop)
@@ -49,11 +50,10 @@ function Settings.entries(desktop)
         return {
             { title = _("首页"), rows = {
                 nav("dashboard", _("底栏图标"),
-                    tab_count > 0 and T(_("已自定义 %1 个"), tab_count) or _("用图片替换底栏图标"),
-                    function() TabPage.iconsPage(desktop) end),
-                nav("swap_vert", _("图标顺序"),
-                    custom_order and _("底栏图标已重新排列") or _("调整底栏图标的先后"),
-                    function() TabPage.orderPage(desktop) end),
+                    tab_count > 0 and T(_("已自定义 %1 个"), tab_count)
+                        or custom_order and _("底栏图标已重新排列")
+                        or _("换图标、调整顺序"),
+                    function() Overlay.push(desktop, TabPage.page(desktop)) end),
                 nav("image", _("组件背景"),
                     bg_count > 0 and T(_("已设置 %1 个组件"), bg_count) or _("给首页组件加背景图"),
                     function() DecorPage.bgPage(desktop) end),

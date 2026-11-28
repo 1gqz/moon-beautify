@@ -35,11 +35,8 @@ return {
     -- 设置首页
     ["吧唧、相框、组件外观与主题"] = "Badges, frames, widget looks and themes",
     ["首页"] = "Home",
-    ["用图片替换底栏图标"] = "Replace tab bar icons with images",
     ["已自定义 %1 个"] = "%1 customized",
-    ["图标顺序"] = "Icon order",
     ["底栏图标已重新排列"] = "Tab bar icons reordered",
-    ["调整底栏图标的先后"] = "Reorder tab bar icons",
     ["组件背景"] = "Widget backgrounds",
     ["已设置 %1 个组件"] = "%1 widgets set",
     ["给首页组件加背景图"] = "Add background images to home widgets",
@@ -177,18 +174,13 @@ return {
     ["书城"] = "Store",
     ["统计"] = "Stats",
     ["设置"] = "Settings",
-    ["自定义"] = "Custom",
-    ["建议用方形单色小图标（PNG），会缩到图标大小"] = "Use a small square monochrome PNG; it is scaled to icon size",
-    ["恢复默认图标"] = "Restore default icon",
-    ["恢复全部"] = "Restore all",
-    ["点一个图标，选上移或下移"] = "Tap an icon, then move it up or down",
-    ["上移一位"] = "Move up",
-    ["下移一位"] = "Move down",
-    ["已经在最前面了"] = "Already first",
-    ["已经在最后面了"] = "Already last",
+    ["全部恢复默认图标"] = "Restore all default icons",
+    ["恢复"] = "Restore",
+    ["换图标、调整顺序"] = "Change icons and order",
+    ["点一行换图，建议用方形单色小图标（PNG），会缩到图标大小"] = "Tap a row to change its image. Use a small square monochrome PNG; it is scaled to icon size",
+    ["自定义图片"] = "Custom image",
+    ["默认图标"] = "Default icon",
     ["恢复默认顺序"] = "Restore default order",
-    ["已恢复默认顺序"] = "Default order restored",
-    ["按月读原来的排列"] = "Use Moon's original order",
 
     -- 组件背景 / 花边 / 输入法
     ["已设"] = "Set",
@@ -206,7 +198,6 @@ return {
     ["内容内边距：%1"] = "Content padding: %1",
     ["按键透明度"] = "Key transparency",
     ["按键透明度：%1%"] = "Key transparency: %1%",
-    ["回到桌面后再设置"] = "Go back to the desktop to set this",
 
     -- 并排组合
     ["并排"] = "Side by side",
@@ -291,6 +282,8 @@ return {
     ["确认删除部件"] = "Delete part?",
     ["删除"] = "Delete",
     ["已删除部件"] = "Part deleted",
+    ["当前外观有没保存进主题的修改，应用后会被替换掉。想留着请先取消，用「当前配置保存为主题」另存一份。"] = "Your current look has changes that aren't saved in any theme. Applying will replace them. To keep them, cancel and use \"Save current setup as a theme\" first.",
+    ["仍然应用"] = "Apply anyway",
 
     -- 月读依赖检查
     ["月华美化需要先安装月读（book.koplugin）。"] = "Moon Beautify requires Moon (book.koplugin) to be installed.",

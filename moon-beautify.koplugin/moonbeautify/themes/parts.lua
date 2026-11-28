@@ -111,16 +111,44 @@ local function copy(value)
 end
 M.copy = copy
 
-local function deepEqual(a, b)
+--- 深度相等；number 留序列化精度容差（存档读回来的小数会差最后几位）
+local function equal(a, b)
+    if a == b then return true end
     if type(a) ~= type(b) then return false end
-    if type(a) ~= "table" then return a == b end
+    if type(a) == "number" then return math.abs(a - b) < 1e-9 end
+    if type(a) ~= "table" then return false end
     for k, v in pairs(a) do
-        if not deepEqual(v, b[k]) then return false end
+        if not equal(v, b[k]) then return false end
     end
     for k in pairs(b) do
         if a[k] == nil then return false end
     end
     return true
+end
+M.equal = equal
+
+--- 递归改写配置里的字符串值：table 原地改，fn 返回 nil 会删掉该键
+function M.walk(value, fn)
+    if type(value) ~= "table" then return value end
+    for k, v in pairs(value) do
+        if type(v) == "string" then
+            value[k] = fn(v)
+        elseif type(v) == "table" then
+            M.walk(v, fn)
+        end
+    end
+    return value
+end
+
+--- 界面壁纸/锁屏存在月读原生设置里，不在 ext.beautify；各由一个模块读写（capture/apply/matches/shareable）
+M.NATIVE_TYPES = { "wallpaper", "lockscreen" }
+local NATIVE_MOD = {}
+for _, t in ipairs(M.NATIVE_TYPES) do NATIVE_MOD[t] = "moonbeautify.themes." .. t .. "_part" end
+
+--- 原生部件类型对应的读写模块；美化配置部件返回 nil
+function M.native(ptype)
+    local mod = NATIVE_MOD[ptype]
+    return mod and require(mod) or nil
 end
 
 --- 组件部件负责的按组件 id 分片的配置表
@@ -293,7 +321,7 @@ function M.matches(conf, partConf, slot)
         for _, key in ipairs(COMP_KEYS) do
             local want = partConf[key]
             if type(want) == "table" then
-                if type(conf[key]) ~= "table" or not deepEqual(want[id], conf[key][id]) then
+                if type(conf[key]) ~= "table" or not equal(want[id], conf[key][id]) then
                     return false
                 end
             end
@@ -321,7 +349,7 @@ function M.matches(conf, partConf, slot)
         return true
     end
     for k, v in pairs(partConf) do
-        if not M.LOCAL_KEYS[k] and not deepEqual(v, conf[k]) then return false end
+        if not M.LOCAL_KEYS[k] and not equal(v, conf[k]) then return false end
     end
     return true
 end
@@ -383,11 +411,20 @@ function M.union(parts)
     local out = {}
     for _, part in ipairs(parts or {}) do
         -- 壁纸/锁屏属于月读原生配置，不混进 ext.beautify
-        if part.type ~= "wallpaper" and part.type ~= "lockscreen" then
+        if not NATIVE_MOD[part.type] then
             M.merge(out, part.conf, part.slot)
         end
     end
     return out
+end
+
+--- 把一份部件配置写进当前设置：原生部件交给月读设置，其余合并进 conf。
+--- value 传空表等于清掉这个部件负责的配置。
+function M.put(conf, ptype, slot, value)
+    local native = M.native(ptype)
+    if native then return native.apply(value) end
+    M.merge(conf, value, slot)
+    return true
 end
 
 --- 给部件补上 id / theme / 显示名等元数据（原地返回）

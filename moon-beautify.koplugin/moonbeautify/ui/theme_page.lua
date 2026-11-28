@@ -179,14 +179,22 @@ local function themeItem(desktop, name, active)
         if v == "preview" then
             Overlay.push(desktop, themePreviewPage(desktop, name))
         elseif v == "apply" then
-            local ok, err = Theme.apply(name)
-            if ok then
-                refreshOverlay(desktop)
-                repaint(desktop)
-                toast(_("已使用该主题"))
-            else
-                toast(T(_("应用失败：%1"), err or ""))
+            local function apply()
+                local ok, err = Theme.apply(name)
+                if ok then
+                    refreshOverlay(desktop)
+                    repaint(desktop)
+                    toast(_("已使用该主题"))
+                else
+                    toast(T(_("应用失败：%1"), err or ""))
+                end
             end
+            if not Theme.unsaved(name) then return apply() end
+            require("ui.themes.widgets.confirm"):new{
+                text = _("当前外观有没保存进主题的修改，应用后会被替换掉。想留着请先取消，用「当前配置保存为主题」另存一份。"),
+                ok_text = _("仍然应用"),
+                ok_callback = apply,
+            }:show()
         elseif v == "export" then
             pickPath(desktop, nil, false, function(dir)
                 local ok, path_or_err = Theme.export(name, dir)
@@ -262,6 +270,7 @@ local function themeTypeListPage(desktop)
         sections = function()
             local Theme = require("moonbeautify.themes.theme")
             local active = Store.conf().active_theme
+            local activeStatus = active and (Theme.dirty(active) and _("应用中（有修改）") or _("应用中"))
             local rows = {}
             for _idx, name in ipairs(Theme.list()) do
                 rows[#rows + 1] = function(iw)
@@ -270,7 +279,7 @@ local function themeTypeListPage(desktop)
                     return Row.widget({
                         width = iw, icon = "palette", title = name,
                         subtitle = T(_("%1 张图 · %2 KB"), n, kb),
-                        status = applied and (Theme.dirty(name) and _("应用中（有修改）") or _("应用中")) or nil,
+                        status = applied and activeStatus or nil,
                         status_on = applied, chevron = true,
                         callback = function() themeItem(desktop, name, active) end,
                     })
