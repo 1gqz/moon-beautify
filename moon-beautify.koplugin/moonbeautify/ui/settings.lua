@@ -52,6 +52,18 @@ function Settings.entries(desktop)
         local theme_count = #require("moonbeautify.themes.theme").list()
         local ver = Update.version()
         local auto = Update.autoEnabled()
+        local wp_on, ls_on = false, false
+        pcall(function() wp_on = require("features.wallpaper").anyEnabled() end)
+        pcall(function() ls_on = require("features.lockscreen.settings").isCompose() end)
+        --- 打开月读原生设置页（壁纸 / 锁屏）；失败提示需要月读
+        local function openMoon(build)
+            local ok, page = pcall(build)
+            if ok and page then
+                Overlay.push(desktop, page)
+            else
+                require("moonbeautify.ui.common").toast(_("需要月读"))
+            end
+        end
         return {
             { title = _("首页"), rows = {
                 nav("dashboard", _("底栏图标"),
@@ -68,6 +80,22 @@ function Settings.entries(desktop)
                 nav("view_column", _("并排组合"),
                     row_count > 0 and T(_("已有 %1 组"), row_count) or _("两个组件挤同一行"),
                     function() RowsPage.page(desktop) end),
+            } },
+            { title = _("壁纸"), rows = {
+                nav("wallpaper", _("界面壁纸"),
+                    wp_on and _("开 · 月读外观设置") or _("关 · 月读外观设置"),
+                    function()
+                        openMoon(function()
+                            return require("features.wallpaper.setting").entries(desktop)[1].page
+                        end)
+                    end),
+                nav("lock", _("锁屏壁纸"),
+                    ls_on and _("开 · 月读安全设置") or _("关 · 月读安全设置"),
+                    function()
+                        openMoon(function()
+                            return require("features.lockscreen.setting").entries(desktop)[1].page
+                        end)
+                    end),
             } },
             { title = _("输入法"), rows = {
                 nav("apps", _("输入法"),
