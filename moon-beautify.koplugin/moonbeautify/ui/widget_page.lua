@@ -1,30 +1,30 @@
 --[[--
 首页组件自己的设置（编辑态齿轮）：吧唧与相框。
-交互对齐月读「存储空间」：Overlay 叠层 + sections + Row.widget / Row.choice / toggle。
-叶子动作（选图、Spin、取景）仍用现有弹窗。
+用月读 `ui.themes.widgets.settings` 表格弹窗（与缓存章节、最近阅读等同款），
+改完就地刷新；选图 / Spin / 取景仍开叶子弹窗。
 
 @module moonbeautify.ui.widget_page
 --]]
 
 local Spin = require("ui.themes.widgets.spin")
-local Row = require("ui.themes.widgets.row")
-local Overlay = require("desktop.pages.setting.overlay")
+local Settings = require("ui.themes.widgets.settings")
 local _ = require("moonbeautify.l10n")
 local T = require("ffi/util").template
 local Store = require("moonbeautify.core.store")
 local Common = require("moonbeautify.ui.common")
-local repaint, focusText, pickPath, chooseFocus, refreshOverlay =
-    Common.repaint, Common.focusText, Common.pickPath, Common.chooseFocus, Common.refreshOverlay
+local repaint, focusText, pickPath, chooseFocus =
+    Common.repaint, Common.focusText, Common.pickPath, Common.chooseFocus
 
---- 记下配置、落盘、刷新叠层与首页
+--- 记下配置、落盘、重画；有 page 时刷新表格弹窗
 ---@param desktop table|nil
 ---@param key string
 ---@param value any
-local function put(desktop, key, value)
+---@param page table|nil
+local function put(desktop, key, value, page)
     Store.conf()[key] = value
     Store.save()
-    refreshOverlay(desktop)
     repaint(desktop)
+    if page then pcall(function() page:updateView() end) end
 end
 
 local M = {}
@@ -56,13 +56,11 @@ local function overlayText(conf, key)
     return p:match("([^/]+)$") or p
 end
 
-local function ringText(conf, prefix)
+local function ringCurrent(conf, prefix)
     local v = conf[prefix .. "ring"]
-    if v == true then return _("双线") end
-    if type(v) == "string" and v ~= "" then
-        return require("moonbeautify.widgets.badge").RING_LABEL[v] or _("未设置")
-    end
-    return _("无")
+    if v == true or v == "beads" or v == "lace" then return "double" end
+    if type(v) == "string" and v ~= "" then return v end
+    return "none"
 end
 
 local function slotsText(conf, key)
@@ -80,7 +78,6 @@ local function fileName(path)
     return path:match("([^/]+)$") or path
 end
 
---- 转动只有开 / 关，开就是最快（约 24 秒一圈）
 local SPIN_ON = 24
 
 local function spinning(conf, prefix)
@@ -99,394 +96,374 @@ local function frameTitle(prefix)
     return T(_("相框 %1"), n)
 end
 
---- 图片来源相关行（固定图 / 文件夹），主页与子页共用
+--- 取景；返回 false 让表格弹窗先别刷新
 ---@param desktop table|nil
 ---@param prefix string
----@return (fun(iw: number): table)[]
-local function srcRows(desktop, prefix)
-    local conf = Store.conf()
-    local pick = Store.enum(conf, prefix .. "pick", { file = true, folder = true }, "file")
-    local rows = {
-        function(iw)
-            return Row.choice({
-                width = iw, icon = "photo_library", title = _("图片来源"),
-                items = {
-                    { value = "file", text = _("固定一张图") },
-                    { value = "folder", text = _("文件夹里挑一张") },
-                },
-                current = pick,
-                on_select = function(how) put(desktop, prefix .. "pick", how) end,
-            })
-        end,
-    }
-    if pick == "folder" then
-        rows[#rows + 1] = function(iw)
-            return Row.widget({
-                width = iw, icon = "folder", title = _("文件夹"),
-                status = fileName(conf[prefix .. "dir"]), status_on = true, chevron = true,
-                callback = function()
-                    pickPath(desktop, conf[prefix .. "dir"], false, function(path)
-                        put(desktop, prefix .. "dir", path)
-                    end)
-                end,
-            })
-        end
-        rows[#rows + 1] = function(iw)
-            return Row.choice({
-                width = iw, icon = "shuffle", title = _("换图节奏"),
-                items = {
-                    { value = "daily", text = _("每天一张") },
-                    { value = "shuffle", text = _("每次刷新随机") },
-                },
-                current = Store.enum(conf, prefix .. "mode", { daily = true, shuffle = true }, "daily"),
-                on_select = function(m) put(desktop, prefix .. "mode", m) end,
-            })
-        end
-    else
-        rows[#rows + 1] = function(iw)
-            return Row.widget({
-                width = iw, icon = "image", title = _("图片"),
-                status = fileName(conf[prefix .. "src"]), status_on = true, chevron = true,
-                callback = function()
-                    pickPath(desktop, conf[prefix .. "src"], true, function(path)
-                        put(desktop, prefix .. "src", path)
-                    end)
-                end,
-            })
-        end
-    end
-    return rows
-end
-
---- 特效子页：每个特效一行开关
----@param desktop table|nil
----@param key string
-local function effectsPage(desktop, key)
-    local Effects = require("moonbeautify.render.effects")
-    Overlay.push(desktop, {
-        title = _("特效"),
-        sections = function()
-            local cur = Store.conf()[key]
-            if type(cur) ~= "table" then cur = {} end
-            local rows = {}
-            for _i, id in ipairs({ "glitter", "rain", "stars" }) do
-                local on = cur[id] and true or false
-                rows[#rows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, chevron = false, kind = "toggle", icon = "auto_awesome",
-                        title = Effects.LABEL[id],
-                        status = on and _("开") or _("关"), status_on = on,
-                        callback = function()
-                            local now = Store.conf()[key]
-                            if type(now) ~= "table" then now = {} end
-                            now[id] = (not now[id]) and true or nil
-                            put(desktop, key, now)
-                        end,
-                    })
-                end
-            end
-            rows[#rows + 1] = function(iw)
-                return Row.widget({
-                    width = iw, kind = "action", chevron = false, icon = "block",
-                    title = _("全部关掉"),
-                    enabled = next(cur) ~= nil,
-                    callback = function() put(desktop, key, {}) end,
-                })
-            end
-            return { { title = _("特效"), rows = rows } }
-        end,
-    })
-end
-
---- 贴图子页：8 格
----@param desktop table|nil
----@param key string
-local function slotsPage(desktop, key)
-    Overlay.push(desktop, {
-        title = _("贴图"),
-        sections = function()
-            local map = Store.conf()[key]
-            if type(map) ~= "table" then map = {} end
-            local rows = {}
-            for i = 1, 8 do
-                local edge = (i == 1 or i == 4 or i == 5 or i == 8)
-                local name = type(map[i]) == "string" and (map[i]:match("([^/]+)$") or map[i]) or _("空")
-                rows[#rows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, icon = "grid_view",
-                        title = T(_("第 %1 格"), i),
-                        subtitle = edge and _("仅单独一行时显示") or nil,
-                        status = name, status_on = true, chevron = true,
-                        callback = function()
-                            local List = require("ui.themes.widgets.list")
-                            List:new{
-                                title = T(_("第 %1 格"), i),
-                                items = {
-                                    { value = "pick", text = _("选一张图…") },
-                                    { value = "clear", text = _("清空这一格") },
-                                },
-                                centered = true,
-                                on_select = function(v)
-                                    if v == nil then return end
-                                    if v == "pick" then
-                                        local cur = Store.conf()[key]
-                                        pickPath(desktop, type(cur) == "table" and cur[i] or nil, true, function(path)
-                                            local now = Store.conf()[key]
-                                            if type(now) ~= "table" then now = {} end
-                                            now[i] = path
-                                            put(desktop, key, now)
-                                        end)
-                                    else
-                                        local now = Store.conf()[key]
-                                        if type(now) == "table" then
-                                            now[i] = nil
-                                            put(desktop, key, now)
-                                        end
-                                    end
-                                end,
-                            }:show()
-                        end,
-                    })
-                end
-            end
-            rows[#rows + 1] = function(iw)
-                return Row.note(iw, _("上 4 下 4 共 8 格，并排时只显示中间 4 格"))
-            end
-            return { { title = _("贴图"), rows = rows } }
-        end,
-    })
-end
-
---- 叠加素材：当前状态 + 选图 / 清除
----@param desktop table|nil
----@param key string
-local function overlayPage(desktop, key)
-    Overlay.push(desktop, {
-        title = _("叠加素材"),
-        sections = function()
-            local cur = Store.conf()[key]
-            local name = overlayText(Store.conf(), key)
-            local has = type(cur) == "string" and cur ~= ""
-            return { { title = _("叠加素材"), rows = {
-                function(iw)
-                    return Row.widget({
-                        width = iw, icon = "layers", title = _("素材图"),
-                        subtitle = _("带透明通道的 PNG，压在照片上"),
-                        status = name, status_on = true, chevron = true,
-                        callback = function()
-                            pickPath(desktop, cur, true, function(path) put(desktop, key, path) end)
-                        end,
-                    })
-                end,
-                function(iw)
-                    return Row.widget({
-                        width = iw, kind = "action", chevron = false, icon = "delete",
-                        title = _("清除"), enabled = has,
-                        callback = function() put(desktop, key, nil) end,
-                    })
-                end,
-            } } }
-        end,
-    })
-end
-
---- 取景：开全屏选区（会关掉叠层链，避免确定后又弹出设置页）
----@param desktop table|nil
----@param prefix string
-local function openFocus(desktop, prefix)
+---@param page table|nil
+local function openFocus(desktop, prefix, page)
     local conf = Store.conf()
     local focus = require("moonbeautify.widgets.view").focusOf(conf[prefix .. "focus"])
     chooseFocus(select(1, require("moonbeautify.widgets.view").pickSrc(conf, prefix)), focus, function(v)
         applyFocusPrefixed(Store.conf(), prefix, v)
         Store.save()
+        -- Overlay 已在 chooseFocus 里关掉；Settings 弹窗还在，只刷新它。
+        -- 不调 repaint：全屏选区关后重画桌面会把底下叠层又捞上来。
+        if page then pcall(function() page:updateView() end) end
     end, desktop)
 end
 
---- 吧唧设置叠层
+--- 特效子表
+---@param desktop table|nil
+---@param key string
+---@param parent table|nil
+local function effectsSettings(desktop, key, parent)
+    local Effects = require("moonbeautify.render.effects")
+    Settings:new{
+        title = _("特效"),
+        items = function()
+            local cur = Store.conf()[key]
+            if type(cur) ~= "table" then cur = {} end
+            local items = {}
+            for _i, id in ipairs({ "glitter", "rain", "stars" }) do
+                items[#items + 1] = {
+                    title = Effects.LABEL[id],
+                    toggle = true,
+                    checked = cur[id] and true or false,
+                    callback = function()
+                        local now = Store.conf()[key]
+                        if type(now) ~= "table" then now = {} end
+                        now[id] = (not now[id]) and true or nil
+                        put(desktop, key, now, parent)
+                    end,
+                }
+            end
+            items[#items + 1] = {
+                title = _("全部关掉"),
+                chevron = false,
+                callback = function()
+                    put(desktop, key, {}, parent)
+                end,
+            }
+            return items
+        end,
+    }:show()
+end
+
+--- 贴图子表
+---@param desktop table|nil
+---@param key string
+---@param parent table|nil
+local function slotsSettings(desktop, key, parent)
+    Settings:new{
+        title = _("贴图"),
+        items = function(page)
+            local map = Store.conf()[key]
+            if type(map) ~= "table" then map = {} end
+            local items = {}
+            for i = 1, 8 do
+                local edge = (i == 1 or i == 4 or i == 5 or i == 8)
+                local name = type(map[i]) == "string" and (map[i]:match("([^/]+)$") or map[i]) or _("空")
+                items[#items + 1] = {
+                    title = T(_("第 %1 格"), i) .. (edge and _("（仅单独一行时显示）") or ""),
+                    status = name,
+                    chevron = true,
+                    callback = function()
+                        local List = require("ui.themes.widgets.list")
+                        List:new{
+                            title = T(_("第 %1 格"), i),
+                            items = {
+                                { value = "pick", text = _("选一张图…") },
+                                { value = "clear", text = _("清空这一格") },
+                            },
+                            centered = true,
+                            on_select = function(v)
+                                if v == nil then return end
+                                if v == "pick" then
+                                    local cur = Store.conf()[key]
+                                    pickPath(desktop, type(cur) == "table" and cur[i] or nil, true, function(path)
+                                        local now = Store.conf()[key]
+                                        if type(now) ~= "table" then now = {} end
+                                        now[i] = path
+                                        put(desktop, key, now, page)
+                                        if parent then pcall(function() parent:updateView() end) end
+                                    end)
+                                else
+                                    local now = Store.conf()[key]
+                                    if type(now) == "table" then
+                                        now[i] = nil
+                                        put(desktop, key, now, page)
+                                        if parent then pcall(function() parent:updateView() end) end
+                                    end
+                                end
+                            end,
+                        }:show()
+                        return false
+                    end,
+                }
+            end
+            items[#items + 1] = {
+                note = _("贴图（上 4 下 4 共 8 格，并排时只显示中间 4 格）"),
+            }
+            return items
+        end,
+    }:show()
+end
+
+--- 叠加素材子表
+---@param desktop table|nil
+---@param key string
+---@param parent table|nil
+local function overlaySettings(desktop, key, parent)
+    Settings:new{
+        title = _("叠加素材"),
+        items = function(page)
+            local cur = Store.conf()[key]
+            local has = type(cur) == "string" and cur ~= ""
+            return {
+                {
+                    title = _("选一张透明 PNG…"),
+                    status = overlayText(Store.conf(), key),
+                    chevron = true,
+                    callback = function()
+                        pickPath(desktop, cur, true, function(path)
+                            put(desktop, key, path, page)
+                            if parent then pcall(function() parent:updateView() end) end
+                        end)
+                        return false
+                    end,
+                },
+                {
+                    title = _("清除"),
+                    chevron = false,
+                    callback = function()
+                        if not has then return false end
+                        put(desktop, key, nil, page)
+                        if parent then pcall(function() parent:updateView() end) end
+                    end,
+                },
+            }
+        end,
+    }:show()
+end
+
+--- 图片来源相关行
 ---@param desktop table|nil
 ---@param prefix string
-local function badgePage(desktop, prefix)
-    return {
+---@param page table
+---@return table[]
+local function srcItems(desktop, prefix, page)
+    local conf = Store.conf()
+    local pick = Store.enum(conf, prefix .. "pick", { file = true, folder = true }, "file")
+    local items = {
+        {
+            title = _("图片来源"),
+            items = {
+                { value = "file", text = _("固定一张图") },
+                { value = "folder", text = _("文件夹里挑一张") },
+            },
+            current = pick,
+            on_select = function(how) put(desktop, prefix .. "pick", how, page) end,
+        },
+    }
+    if pick == "folder" then
+        items[#items + 1] = {
+            title = _("文件夹"),
+            status = fileName(conf[prefix .. "dir"]),
+            chevron = true,
+            callback = function()
+                pickPath(desktop, conf[prefix .. "dir"], false, function(path)
+                    put(desktop, prefix .. "dir", path, page)
+                end)
+                return false
+            end,
+        }
+        items[#items + 1] = {
+            title = _("换图节奏"),
+            items = {
+                { value = "daily", text = _("每天一张") },
+                { value = "shuffle", text = _("每次刷新随机") },
+            },
+            current = Store.enum(conf, prefix .. "mode", { daily = true, shuffle = true }, "daily"),
+            on_select = function(m) put(desktop, prefix .. "mode", m, page) end,
+        }
+    else
+        items[#items + 1] = {
+            title = _("图片"),
+            status = fileName(conf[prefix .. "src"]),
+            chevron = true,
+            callback = function()
+                pickPath(desktop, conf[prefix .. "src"], true, function(path)
+                    put(desktop, prefix .. "src", path, page)
+                end)
+                return false
+            end,
+        }
+    end
+    return items
+end
+
+--- 吧唧设置
+---@param desktop table|nil
+---@param prefix string
+local function badgeSettings(desktop, prefix)
+    Settings:new{
         title = prefixTitle(prefix),
-        sections = function()
+        items = function(page)
             local conf = Store.conf()
             local focus = require("moonbeautify.widgets.view").focusOf(conf[prefix .. "focus"])
             local shape = Store.enum(conf, prefix .. "shape", { circle = true, round = true, square = true }, "circle")
-            local ring = (function()
-                local v = conf[prefix .. "ring"]
-                if v == true or v == "beads" or v == "lace" then return "double" end
-                if type(v) == "string" and v ~= "" then return v end
-                return "none"
-            end)()
             local spin_on = spinning(conf, prefix)
-
-            local image_rows = srcRows(desktop, prefix)
-            image_rows[#image_rows + 1] = function(iw)
-                return Row.widget({
-                    width = iw, icon = "crop", title = _("取景选区"),
-                    status = focusText(focus), status_on = true, chevron = true,
-                    callback = function() openFocus(desktop, prefix) end,
-                })
-            end
-
-            return {
-                { title = _("图片"), rows = image_rows },
-                { title = _("外观"), rows = {
-                    function(iw)
-                        return Row.choice({
-                            width = iw, icon = "circle", title = _("形状"),
-                            items = {
-                                { value = "circle", text = _("圆形") },
-                                { value = "round", text = _("圆角") },
-                                { value = "square", text = _("直角") },
-                            },
-                            current = shape,
-                            on_select = function(v) put(desktop, prefix .. "shape", v) end,
-                        })
-                    end,
-                    function(iw)
-                        return Row.choice({
-                            width = iw, icon = "photo_size_select_large", title = _("尺寸"),
-                            items = SIZES,
-                            current = Store.enum(conf, prefix .. "size", { s = true, m = true, l = true }, "m"),
-                            on_select = function(v) put(desktop, prefix .. "size", v) end,
-                        })
-                    end,
-                    function(iw)
-                        return Row.choice({
-                            width = iw, icon = "radio_button_unchecked",
-                            title = _("光环"),
-                            subtitle = _("画在吧唧本体外面的一圈"),
-                            items = {
-                                { value = "none", text = _("无") },
-                                { value = "double", text = _("双线（两条细环）") },
-                            },
-                            current = ring,
-                            on_select = function(v)
-                                put(desktop, prefix .. "ring", v == "none" and nil or v)
-                            end,
-                        })
-                    end,
-                    function(iw)
-                        return Row.widget({
-                            width = iw, chevron = false, kind = "toggle", icon = "rotate_right",
-                            title = _("转动"),
-                            status = spin_on and _("开") or _("关"), status_on = spin_on,
-                            callback = function()
-                                put(desktop, prefix .. "spin", spin_on and 0 or SPIN_ON)
-                            end,
-                        })
-                    end,
-                } },
-                { title = _("装饰"), rows = {
-                    function(iw)
-                        return Row.widget({
-                            width = iw, icon = "auto_awesome", title = _("特效"),
-                            status = effectsText(conf, prefix .. "effects"), status_on = true, chevron = true,
-                            callback = function() effectsPage(desktop, prefix .. "effects") end,
-                        })
-                    end,
-                    function(iw)
-                        return Row.widget({
-                            width = iw, icon = "layers", title = _("叠加素材"),
-                            status = overlayText(conf, prefix .. "overlay"), status_on = true, chevron = true,
-                            callback = function() overlayPage(desktop, prefix .. "overlay") end,
-                        })
-                    end,
-                    function(iw)
-                        return Row.widget({
-                            width = iw, icon = "grid_view", title = _("贴图"),
-                            subtitle = _("上 4 下 4 共 8 格，并排时只显示中间 4 格"),
-                            status = slotsText(conf, prefix .. "slots"), status_on = true, chevron = true,
-                            callback = function() slotsPage(desktop, prefix .. "slots") end,
-                        })
-                    end,
-                } },
+            local items = srcItems(desktop, prefix, page)
+            items[#items + 1] = {
+                title = _("取景选区"),
+                status = focusText(focus),
+                chevron = true,
+                callback = function()
+                    openFocus(desktop, prefix, page)
+                    return false
+                end,
             }
+            items[#items + 1] = {
+                title = _("形状"),
+                items = {
+                    { value = "circle", text = _("圆形") },
+                    { value = "round", text = _("圆角") },
+                    { value = "square", text = _("直角") },
+                },
+                current = shape,
+                on_select = function(v) put(desktop, prefix .. "shape", v, page) end,
+            }
+            items[#items + 1] = {
+                title = _("尺寸"),
+                items = SIZES,
+                current = Store.enum(conf, prefix .. "size", { s = true, m = true, l = true }, "m"),
+                on_select = function(v) put(desktop, prefix .. "size", v, page) end,
+            }
+            items[#items + 1] = {
+                title = _("光环"),
+                items = {
+                    { value = "none", text = _("无") },
+                    { value = "double", text = _("双线（两条细环）") },
+                },
+                current = ringCurrent(conf, prefix),
+                on_select = function(v)
+                    put(desktop, prefix .. "ring", v == "none" and nil or v, page)
+                end,
+            }
+            items[#items + 1] = {
+                title = _("转动"),
+                toggle = true,
+                checked = spin_on,
+                callback = function()
+                    put(desktop, prefix .. "spin", spin_on and 0 or SPIN_ON, page)
+                end,
+            }
+            items[#items + 1] = {
+                title = _("特效"),
+                status = effectsText(conf, prefix .. "effects"),
+                chevron = true,
+                callback = function()
+                    effectsSettings(desktop, prefix .. "effects", page)
+                    return false
+                end,
+            }
+            items[#items + 1] = {
+                title = _("叠加素材"),
+                status = overlayText(conf, prefix .. "overlay"),
+                chevron = true,
+                callback = function()
+                    overlaySettings(desktop, prefix .. "overlay", page)
+                    return false
+                end,
+            }
+            items[#items + 1] = {
+                title = _("贴图"),
+                status = slotsText(conf, prefix .. "slots"),
+                chevron = true,
+                callback = function()
+                    slotsSettings(desktop, prefix .. "slots", page)
+                    return false
+                end,
+            }
+            return items
         end,
-    }
+    }:show()
 end
 
---- 相框设置叠层
+--- 相框设置
 ---@param desktop table|nil
 ---@param prefix string
-local function framePage(desktop, prefix)
-    return {
+local function frameSettings(desktop, prefix)
+    Settings:new{
         title = frameTitle(prefix),
-        sections = function()
+        items = function(page)
             local conf = Store.conf()
             local view = Store.enum(conf, prefix .. "view", { single = true, stack = true }, "stack")
             local count = math.max(1, math.min(9, tonumber(conf[prefix .. "count"]) or 5))
             local focus = require("moonbeautify.widgets.view").focusOf(conf[prefix .. "focus"])
-
-            local look_rows = {
-                function(iw)
-                    return Row.choice({
-                        width = iw, icon = "view_agenda", title = _("呈现方式"),
-                        items = {
-                            { value = "single", text = _("单图铺满（一张，填满裁边）") },
-                            { value = "stack", text = _("多图堆叠（方块窗，左右滑动翻页）") },
-                        },
-                        current = view,
-                        on_select = function(v) put(desktop, prefix .. "view", v) end,
-                    })
-                end,
+            local items = {
+                {
+                    title = _("呈现方式"),
+                    items = {
+                        { value = "single", text = _("单图铺满（一张，填满裁边）") },
+                        { value = "stack", text = _("多图堆叠（方块窗，左右滑动翻页）") },
+                    },
+                    current = view,
+                    on_select = function(v) put(desktop, prefix .. "view", v, page) end,
+                },
             }
             if view == "stack" then
-                look_rows[#look_rows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, icon = "filter_none", title = _("张数"),
-                        status = tostring(count), status_on = true, chevron = true,
-                        callback = function()
-                            Spin:new{
-                                title = _("相框张数"),
-                                fields = { { value = count, min = 1, max = 9 } },
-                                callback = function(v) put(desktop, prefix .. "count", math.floor(v)) end,
-                            }:show()
-                        end,
-                    })
-                end
+                items[#items + 1] = {
+                    title = _("张数"),
+                    status = tostring(count),
+                    chevron = true,
+                    callback = function()
+                        Spin:new{
+                            title = _("相框张数"),
+                            fields = { { value = count, min = 1, max = 9 } },
+                            callback = function(v)
+                                put(desktop, prefix .. "count", math.floor(v), page)
+                            end,
+                        }:show()
+                        return false
+                    end,
+                }
             end
-
-            local image_rows = srcRows(desktop, prefix)
+            for _i, row in ipairs(srcItems(desktop, prefix, page)) do
+                items[#items + 1] = row
+            end
             if view == "single" then
-                image_rows[#image_rows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, icon = "crop", title = _("取景选区"),
-                        status = focusText(focus), status_on = true, chevron = true,
-                        callback = function() openFocus(desktop, prefix) end,
-                    })
-                end
+                items[#items + 1] = {
+                    title = _("取景选区"),
+                    status = focusText(focus),
+                    chevron = true,
+                    callback = function()
+                        openFocus(desktop, prefix, page)
+                        return false
+                    end,
+                }
             else
-                image_rows[#image_rows + 1] = function(iw)
-                    return Row.widget({
-                        width = iw, chevron = false, icon = "crop", title = _("取景选区"),
-                        subtitle = _("多图堆叠完整显示，不裁切"),
-                        enabled = false,
-                    })
-                end
+                items[#items + 1] = {
+                    note = _("取景选区：（多图堆叠完整显示，不裁切）"),
+                }
             end
-
-            return {
-                { title = _("呈现"), rows = look_rows },
-                { title = _("图片"), rows = image_rows },
-            }
+            return items
         end,
-    }
+    }:show()
 end
 
 --- 设置入口（widget.settings(desktop, id)）
----@param prefix string 配置前缀，如 "badge_" / "badge2_"
+---@param prefix string
 ---@param desktop table|nil
 function M.show(prefix, desktop)
-    Overlay.open(desktop, badgePage(desktop, prefix))
+    badgeSettings(desktop, prefix)
 end
 
 --- 相框设置入口
 ---@param prefix string
 ---@param desktop table|nil
 function M.showFrame(prefix, desktop)
-    Overlay.open(desktop, framePage(desktop, prefix))
+    frameSettings(desktop, prefix)
 end
 
 return M
